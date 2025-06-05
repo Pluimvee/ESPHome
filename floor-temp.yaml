@@ -1,0 +1,81 @@
+esphome:
+  name: floor-temp
+  friendly_name: Floor Temperature
+
+esp8266:
+  board: esp01_1m
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: !secret api_key
+
+# Allow Over-The-Air updates
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Floor Temperature Hotspot"
+    password: !secret wifi_ap_password
+
+# Enable logging
+logger:
+  level: DEBUG  # Set the logging level to DEBUG
+  baud_rate: 0
+
+captive_portal:
+
+web_server:
+    port: 80
+    version: 3
+
+# and now we are adding the functionality of this device
+one_wire:
+  - platform: gpio
+    pin: GPIO05
+    
+switch:
+  - platform: gpio
+    pin:
+      number: GPIO2
+      mode: output
+    id: led
+    
+sensor:
+  # Add a sensor to monitor WiFi signal strength
+  - platform: wifi_signal
+    name: "WiFi Signal Strength"
+    update_interval: 60s
+  # From Heat Source
+  - platform: dallas_temp
+    address: 0xd23cd40457914c28
+    name: Ta Verdeler (Red)
+    icon: mdi:heating-coil
+    update_interval: 10s
+    on_value:
+      then:
+        - switch.toggle: led
+
+  - platform: dallas_temp
+    address: 0x323c34045709be28
+    name: Tr Eetkamer (White)
+    icon: mdi:thermometer-chevron-up
+    update_interval: 10s
+
+  - platform: dallas_temp
+    address: 0x963cdf04572d8528
+    name: Tr Keuken (Blue)
+    icon: mdi:thermometer-chevron-up
+    update_interval: 10s
+
+  - platform: dallas_temp
+    address: 0xa43c130457bc1528
+    name: Tr Woonkamer (Yellow)
+    icon: mdi:thermometer-chevron-up
+    update_interval: 10s
+   
