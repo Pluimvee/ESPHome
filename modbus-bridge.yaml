@@ -1,3 +1,8 @@
+# Copyright (c) 2025 Pluimvee
+# ModBus TCP-RTU Bridge ESPHome configuration 
+
+# First some basic configuration
+#--------------------------------------------
 esphome:
   name: modbus-bridge
   friendly_name: ModBus Bridge
@@ -25,14 +30,21 @@ wifi:
 
 # Enable logging
 logger:
-  level: DEBUG  # Set the logging level to DEBUG
-  baud_rate: 0
+  level: DEBUG  
+  baud_rate: 0  # Disable logging on UART (as we need the UART)
 
 #captive_portal:
-
 web_server:
     port: 80
     version: 3
+
+# NOW the device specific logic begins
+#--------------------------------------------
+
+# Some special code to allow the ESPHome Modbus TCP-RTU bridge to work
+external_components:
+  - source: github://Pluimvee/esphome-modbus-tcp-to-rtu
+    refresh: 1min
 
 # UART configuration for MAX485
 uart:
@@ -43,16 +55,13 @@ uart:
   rx_buffer_size: 512
 #  debug:
 
-external_components:
-  - source: github://Pluimvee/esphome-modbus-tcp-to-rtu
-    refresh: 1min
-
 modbus_bridge:
    uart_id: modbus
    port: 502
    buffer_size: 256
    timeout: 3000
-   
+
+#and some sensors to monitor the bridge itself   
 binary_sensor:
   - platform: modbus_bridge
     connected:

@@ -1,0 +1,62 @@
+# Copyright (c) 2025 Pluimvee
+# Resideo ESPHome configuration 
+
+# First some basic configuration
+#--------------------------------------------
+esphome:
+  name: resideo-zolder
+  friendly_name: Resideo Zolder
+
+esp8266:
+  board: esp01_1m
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: !secret api_key
+
+# Allow Over-The-Air updates
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+# Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Outsidetemp Fallback Hotspot"
+    password: !secret wifi_ap_password
+
+captive_portal:
+
+# Enable web server for debugging and control
+web_server:
+    port: 80
+    version: 3
+
+# Enable logging
+logger:
+  level: DEBUG  
+  baud_rate: 0  # Disable logging on UART (as we need the UART)
+
+# NOW the device specific logic begins
+#--------------------------------------------
+
+# Some special code to allow the Resideo mod to work
+external_components:
+  # - source: github://Pluimvee/esphome-resideo
+  - source: C:\Users\erikv\OneDrive\Archive\Erik\Hobby\ESPHome/components/esphome-resideo
+    refresh: 1min
+    components: [cht8305_sniffer, cm1106_sniffer]
+
+sensor:
+  - platform: cht8305_sniffer
+    temperature:
+      name: "Temperature"
+    humidity:
+      name: "Humidity"
+
+  - platform: cm1106_sniffer
+    name: "CO2 Concentration"
+
