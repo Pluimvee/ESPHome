@@ -52,11 +52,13 @@ external_components:
 
 sensor:
   - platform: cht8305_sniffer
+    # update_interval: 10s
     temperature:
       name: "Temperature"
     humidity:
       name: "Humidity"
 
   - platform: cm1106_sniffer
+    # update_interfval: 10s
     name: "CO2 Concentration"
 
