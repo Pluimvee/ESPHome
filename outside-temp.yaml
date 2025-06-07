@@ -52,6 +52,7 @@ sensor:
   - platform: wifi_signal
     name: "WiFi Signal Strength"
     update_interval: 60s
+
   - platform: dallas_temp
     address: 0xdb3c900457e5f828
     name: "Outside Temperature"

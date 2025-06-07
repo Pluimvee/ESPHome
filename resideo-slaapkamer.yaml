@@ -4,8 +4,8 @@
 # First some basic configuration
 #--------------------------------------------
 esphome:
-  name: resideo-zolder
-  friendly_name: Resideo Zolder
+  name: resideo-slaapkamer
+  friendly_name: Resideo Slaapkamer
 
 esp8266:
   board: esp01_1m
@@ -45,9 +45,7 @@ logger:
 
 # Some special code to allow the Resideo mod to work
 external_components:
-  # - source: github://Pluimvee/esphome-resideo
-  - source: C:\Users\erikv\OneDrive\Archive\Erik\Hobby\ESPHome/components/esphome-resideo/components
-    refresh: 1min
+  - source: github://Pluimvee/esphome-resideo
     components: [cht8305_sniffer, cm1106_sniffer]
 
 sensor:
@@ -70,4 +68,3 @@ sensor:
 
   - platform: cm1106_sniffer
     name: "Carbon-dioxide"
-
