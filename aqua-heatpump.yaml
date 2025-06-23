@@ -1,0 +1,276 @@
+# Copyright (c) 2025 Pluimvee
+# Resideo ESPHome configuration 
+
+# First some basic configuration
+#--------------------------------------------
+esphome:
+  name: "aqua-heatpump"
+  friendly_name: Warmtepomp boiler
+
+esp8266:
+  board: esp8285
+
+# Enable Home Assistant API
+# AT THE BOTTOM OF THE FILE, AFTER ALL SENSORS AND SWITCHES
+
+# Allow Over-The-Air updates
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+# Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Test"
+    password: !secret wifi_ap_password
+
+captive_portal:
+
+# Enable web server for debugging and control
+web_server:
+    port: 80
+    version: 3
+
+# Enable logging
+logger:
+  level: INFO  
+  # baud_rate: 0  # Disable logging on UART (as we need the UART)
+
+# NOW the device specific logic begins
+#--------------------------------------------    
+one_wire:
+  - platform: gpio
+    pin: GPIO013
+
+# I²C bus (AHT10)
+i2c:
+  sda: GPIO4  # D2
+  scl: GPIO5  # D1
+  scan: true
+
+sensor:
+  - platform: aht10
+    temperature:
+      name: "Air In"
+      id: air_in_temp
+    humidity:
+      name: "Air Humidity"
+      id: air_humidity
+    update_interval: 10s
+
+  - platform: dallas_temp
+    address: 0xe5858dc935646128
+    id: boiler_temp
+    name: "Boiler"
+    update_interval: 10s
+  - platform: dallas_temp
+    address: 0x87b7b1c935646128  
+    id: air_out_temp
+    name: "Air Out"
+    update_interval: 10s
+  - platform: dallas_temp
+    address: 0x6a0000000cbd5528  
+    id: water_mixed_temp
+    name: "Water Mixed"
+    update_interval: 10s
+  - platform: dallas_temp
+    address: 0x8e0000000d134d28  
+    id: water_out_temp
+    name: "Water Out"
+    update_interval: 10s
+  - platform: dallas_temp
+    address: 0x960000000aa6db28  
+    id: water_in_temp
+    name: "Water In"
+    update_interval: 10s
+    
+  # Add a sensor to monitor WiFi signal strength
+  - platform: wifi_signal
+    name: "WiFi Signal Strength"
+    update_interval: 60s
+
+# GPIO outputs
+switch:
+  # The Solar mode (PV) which lets the WPB to run longer
+  - platform: gpio
+    pin: GPIO14  # D5
+    id: eco_heat
+    name: "Eco Heat"
+    restore_mode: RESTORE_DEFAULT_OFF
+    inverted: false  # Active HIGH using Optocoupler
+
+  # The internal boost element, hidden switch to prevent accidental activation
+  - platform: gpio
+    pin: GPIO12  # D6
+    inverted: false  # Active HIGH using Optocoupler
+    id: boost_switch
+    restore_mode: ALWAYS_OFF
+    internal: true
+
+  # vent medium switch
+  - platform: gpio
+    pin: GPIO16  # D0
+    id: vent_medium
+    name: "Vent Medium"
+    restore_mode: RESTORE_DEFAULT_ON
+    inverted: true  # Active LOW using Solid State Relais
+    on_turn_on:
+      - lambda: 'id(stable_timer) = millis();'
+    on_turn_off:
+      - lambda: 'id(stable_timer) = millis();'
+
+  # vent medium high switch
+  - platform: gpio
+    pin: GPIO2  # D4
+    id: vent_high
+    name: "Vent High"
+    restore_mode: RESTORE_DEFAULT_OFF
+    inverted: true  # Active LOW using Solid State Relais
+    on_turn_on:
+      - lambda: 'id(stable_timer) = millis();'
+    on_turn_off:
+      - lambda: 'id(stable_timer) = millis();'
+
+  # Boost switch to trigger the booster script
+  - platform: template
+    name: "Boost"
+    turn_on_action:
+      - logger.log: "Booster triggered"
+      - script.execute: booster
+
+#Some binanry sensors
+binary_sensor:
+  - platform: template
+    name: "Booster"
+    lambda: |-
+      return id(boost_switch).state;
+  - platform: template
+    name: "Hot Water Use"
+    lambda: |-
+      return id(hot_water_use);
+  - platform: template
+    name: "Air Humid"
+    lambda: |-
+      return id(air_humid);
+  - platform: template
+    name: "Heatpump"
+    lambda: |-
+      return id(wpb_running);
+
+# Automations
+globals:
+  - id: base_humidity
+    type: float
+    restore_value: no
+    initial_value: '0.0'
+  - id: hot_water_use
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  - id: wpb_running
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  - id: air_humid 
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  - id: stable_timer
+    type: uint32_t
+    restore_value: no
+    initial_value: '0'
+
+# Automations
+interval:
+  # turn off boost (element) when boiler temperature is above 80°C
+  - interval: 1min
+    then:
+      - if:
+          condition:
+            lambda: 'return id(boiler_temp).state > 80.0;'
+          then:
+            - switch.turn_off: boost_switch
+            - logger.log:
+                format: "Boiler temperature reached %.1f°C. Turning off boost."
+                args:
+                  - id(boiler_temp).state
+                level: WARN
+
+  # Set flags and handle ventilation logic
+  - interval: 1s
+    then:
+      - lambda: |-
+          // Nieuwe vlagwaarden
+          bool new_hot = (id(water_mixed_temp).state > id(air_in_temp).state + 5.0);  // als mixed water 5 graden warmer dan lucht temperature
+          bool new_wpb = (id(air_in_temp).state) > id(air_out_temp).state + 1.0;      // als lucht uit temperatuur 1 of meer graad lager is dan lucht in temperatuur
+          bool new_hum = (id(air_humidity).state > id(base_humidity) + 5.0);          // als luchtvochtigheid 5% hoger is dan basisvochtigheid
+
+          // Detecteer veranderingen
+          bool changed = (new_hot != id(hot_water_use)) ||
+                        (new_wpb != id(wpb_running)) ||
+                        (new_hum != id(air_humid));
+
+          // Zet flags
+          id(hot_water_use) = new_hot;
+          id(wpb_running) = new_wpb;
+          id(air_humid) = new_hum;
+
+          // Counter resetten bij wijziging
+          if (changed)
+            id(stable_timer) = millis();
+          
+          uint32_t elapsed = (millis() - id(stable_timer)) / 60000;  // in minuten
+
+          // Base_humidity bijwerken als al 15 minuten niks gebeurd is, en dan iedere 15 minuten
+          if ((id(base_humidity) == 0.0 || elapsed > 10) && !new_hot && !new_hum) {
+            id(base_humidity) = id(air_humidity).state;
+            ESP_LOGI("humidity", "Base humidity set to %.2f%%", id(base_humidity));
+          }
+          // Ventilatie aansturen als iets veranderd is of elke 10 minuten
+          if (changed || elapsed > 10) {
+            if (id(hot_water_use)) {
+              id(vent_high).turn_on();
+              id(vent_medium).turn_off();
+              ESP_LOGI("vent", "Vent High ON (hot water)");
+            } else if (id(air_humid) || id(wpb_running)) {
+              id(vent_high).turn_off();
+              id(vent_medium).turn_on();
+              ESP_LOGI("vent", "Vent Medium ON (humid or wpb)");
+            } else {
+              id(vent_high).turn_off();
+              id(vent_medium).turn_off();
+              ESP_LOGI("vent", "All ventilation OFF");
+            }
+          }
+          if (elapsed > 10) {
+            ESP_LOGI("status", "Base humidity: %0.2f, Hot Water Use: %s, WPB Running: %s, Air Humid: %s",
+                     id(base_humidity),
+                     id(hot_water_use) ? "Yes" : "No",
+                     id(wpb_running) ? "Yes" : "No",
+                     id(air_humid) ? "Yes" : "No");
+            id(stable_timer) = millis();
+          }
+script:
+# Booster element script
+# This script is triggered by the Boost switch and runs for a specified duration
+  - id: booster
+    mode: restart
+    then:
+      - logger.log: "Booster started"
+      - switch.turn_on: boost_switch
+      - delay: 15min  # Set your desired boost duration
+      - switch.turn_off: boost_switch
+      - logger.log: "Booster finished"
+  
+# Expose a service to reset (restart) the booster remotely
+api:
+  encryption:
+    key: !secret api_key
+  services:
+    - service: boost
+      then:
+        - logger.log:
+            format: "Booster triggered"
+        - script.execute: booster                          

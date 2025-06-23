@@ -46,6 +46,7 @@ logger:
 # Some special code to allow the Resideo mod to work
 external_components:
   - source: github://Pluimvee/esphome-resideo
+    refresh: 5min
     components: [cht8305_sniffer, cm1106_sniffer]
 
 sensor:
