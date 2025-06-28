@@ -6,6 +6,11 @@
 esphome:
   name: water-meter
   friendly_name: Water Meter
+  on_boot:
+    priority: -100  # Zorgt dat dit als laatste gebeurt (na WiFi, tijd, etc.)
+    then:
+      - lambda: |-
+          id(water_used_total) = id(water_used_total_persisted);  // Restore from persistent storage
 
 esp8266:
   board: esp01_1m
@@ -51,30 +56,48 @@ time:
 
 # -- Persistent globals --
 globals:
-  - id: water_used_total
+  - id: water_used_total_persisted
     type: float
     restore_value: yes
-    initial_value: '2932'
+    initial_value: '2943.4736'
+
+  - id: water_used_total
+    type: float
+    restore_value: no # Do not persist flash read/writes is limited (100k)
+    initial_value: '0.0'
+
   - id: water_used_today
     type: float
-    restore_value: yes   
-    initial_value: '0'
+    restore_value: no # Do not persist flash read/writes is limited (100k)
+    initial_value: '0.0'
+
   - id: prev_liters
     type: float
     initial_value: '0'
+
+script:
+  - id: delayed_save # anti-wear script
+    mode: restart
+    then:
+      - delay: 30s
+      - lambda: |-
+          // Save the current water_used_total to persistent storage
+          id(water_used_total_persisted) = id(water_used_total);
+          ESP_LOGI("delayed_save", "The total water used (%0.4f) persisted!", id(water_used_total_persisted));
 
 sensor:
   # Add a sensor to monitor WiFi signal strength
   - platform: wifi_signal
     name: "WiFi Signal Strength"
     update_interval: 60s
+    icon: "mdi:wifi"
 
   # -- Water meter sensors --
   - platform: template
     name: "Total"
     id: total
     unit_of_measurement: "m³"
-    state_class: total_increasing
+    state_class: total_increasing # Use total_increasing to only accept increasing values
     device_class: water
     icon: "mdi:water-plus"
     accuracy_decimals: 4
@@ -85,7 +108,7 @@ sensor:
     name: "Today"
     id: today
     unit_of_measurement: "L"
-    state_class: total
+    state_class: total_increasing
     device_class: water
     icon: "mdi:cup-water"
     accuracy_decimals: 2
@@ -100,13 +123,13 @@ sensor:
     device_class: water
     accuracy_decimals: 2
     icon: "mdi:water-pump"
-    update_interval: 10s
+    update_interval: 5s
     lambda: |-
       float delta = 0;
       if (id(prev_liters) >0 && id(water_used_today) > id(prev_liters))
         delta = id(water_used_today) - id(prev_liters);
       id(prev_liters) = id(water_used_today);
-      return delta * 6;  // Convert to L/min (10s interval, so multiply by 6)
+      return delta * 12;  // Convert to L/min (5s interval, so multiply by 12)
 
 # -- Water meter edge detection --
 binary_sensor:
@@ -124,12 +147,14 @@ binary_sensor:
           id(water_used_today) += 0.33;
           id(total).publish_state(id(water_used_total));
           id(today).publish_state(id(water_used_today));
+      - script.execute: delayed_save
     on_release:
       - lambda: |-
           id(water_used_total) += 0.67 / 1000.0;   // 0.67 L, convert to m³
           id(water_used_today) += 0.67;
           id(total).publish_state(id(water_used_total));
           id(today).publish_state(id(water_used_today));
+      - script.execute: delayed_save
 
 # -- Midnight reset for "Water Used Today" --
 interval:

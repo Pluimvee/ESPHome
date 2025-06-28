@@ -30,7 +30,7 @@ wifi:
 
 # Enable logging
 logger:
-  level: DEBUG  
+  level: INFO  
   baud_rate: 0  # Disable logging on UART (as we need the UART)
 
 #captive_portal:
@@ -66,11 +66,15 @@ binary_sensor:
   - platform: modbus_bridge
     connected:
       name: Connected
+      icon: "mdi:connection"
 
 sensor:
   - platform: modbus_bridge
     connection_count:
       name: "Number of connections"
+      icon: "mdi:lan-connect"
+
   - platform: wifi_signal
     name: "WiFi Signal Strength"
     update_interval: 60s
+    icon: "mdi:wifi"

@@ -37,7 +37,7 @@ web_server:
 
 # Enable logging
 logger:
-  level: DEBUG  
+  level: INFO  
   baud_rate: 0  # Disable logging on UART (as we need the UART)
 
 # NOW the device specific logic begins
@@ -55,6 +55,7 @@ sensor:
   - platform: wifi_signal
     name: "WiFi Signal Strength"
     update_interval: 60s
+    icon: "mdi:wifi"
 
   - platform: cht8305_sniffer
     temperature:

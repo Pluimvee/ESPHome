@@ -22,7 +22,7 @@ ota:
 
 # Enable logging
 logger:
-  level: DEBUG  # Set the logging level to DEBUG
+  level: INFO  # Set the logging level to DEBUG
   baud_rate: 0
 
 wifi:
@@ -58,13 +58,14 @@ sensor:
   - platform: wifi_signal
     name: "WiFi Signal Strength"
     update_interval: 60s
-  
+    icon: "mdi:wifi"
+
   # Ta recieved from Source
   - platform: dallas_temp
     address: 0xd23cd40457914c28
     name: Ta Verdeler (Red)
     icon: mdi:heating-coil
-    update_interval: 10s
+    update_interval: 5s
     on_value:
       then:
         - switch.toggle: led
@@ -74,17 +75,17 @@ sensor:
     address: 0x323c34045709be28
     name: Tr Eetkamer (White)
     icon: mdi:thermometer-chevron-up
-    update_interval: 10s
+    update_interval: 5s
 
   - platform: dallas_temp
     address: 0x963cdf04572d8528
     name: Tr Keuken (Blue)
     icon: mdi:thermometer-chevron-up
-    update_interval: 10s
+    update_interval: 5s
 
   - platform: dallas_temp
     address: 0xa43c130457bc1528
     name: Tr Woonkamer (Yellow)
     icon: mdi:thermometer-chevron-up
-    update_interval: 10s
+    update_interval: 5s
    

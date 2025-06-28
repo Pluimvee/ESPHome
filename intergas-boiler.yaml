@@ -1,0 +1,153 @@
+# Copyright (c) 2025 Pluimvee
+# Configuration For the Intergas HRE24/18 Boiler
+
+# First some basic configuration
+#--------------------------------------------
+esphome:
+  name: intergas-boiler
+  friendly_name: Intergas HRE24/18
+
+esp8266:
+  board: esp01_1m
+
+# Enable logging
+logger:
+  level: DEBUG
+  baud_rate: 0  # we need the uart
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: !secret api_key
+
+# Allow Over-The-Air updates
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+# Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Fallback Hotspot"
+    password: !secret wifi_ap_password
+
+captive_portal:
+
+# Enable web server for debugging and control
+web_server:
+    port: 80
+    version: 3
+
+# and now we are adding the functionality of this device
+#--------------------------------------------
+one_wire:
+  - platform: gpio
+    pin: GPIO05
+
+switch:
+  - platform: gpio
+    pin:
+      number: GPIO2
+      mode: output
+    id: led
+
+uart:
+  id: intergas_serial
+  baud_rate: 9600
+  tx_pin: GPIO01
+  rx_pin: GPIO03
+  # debug:
+
+# Some code to allow communicating with the Intergas Boiler
+external_components:
+  # - source: github://Pluimvee/esphome-intergas
+  - source: C:/Users/erikv/OneDrive/Archive/Erik/Hobby/ESPHome/components/esphome-intergas/components
+    refresh: 1min
+
+# the intergas communicaiton module
+intergas_boiler:
+  uart_id: intergas_serial
+  update_interval: 5s
+
+text_sensor:
+  - platform: intergas_boiler
+    mode:
+      name: "Operating Mode"
+
+binary_sensor:
+  - platform: intergas_boiler
+    alarm:
+      name: "Fault"
+    pump_on:
+      name: "Pump On"
+    tap_switch:
+      name: "Water Flow"
+
+sensor:
+  # Add sensors to monitor the boiler's temperatures
+  - platform: intergas_boiler
+    heater:
+      name: "Heater"
+    inlet:
+      name: "Heater Inlet"
+    outlet:
+      name: "Heater Outlet"
+    set_point:
+      name: "Heater Setpoint"
+    pump:
+      name: "Pump"
+    flow:
+      name: "DHW Flow"
+    dhw:
+      name: "DHW Outlet"
+    pressure:
+      name: "CH Pressure"
+    power:
+      name: "Power"
+    energy_ch:
+      name: "CH Energy"
+    energy_dhw:
+      name: "DHW Energy"
+    room:
+      name: "Room Current"
+    room_set:
+      name: "Room Setpoint"
+    fault_code:
+      name: "Fault Code"
+    last_fault:
+      name: "Fault Last"
+    fan:
+      name: "Fan"
+    fan_set:
+      name: "Fan Setpoint"
+    fan_rpm:
+      name: "Fan Speed"
+  
+  # Add sensors for inlet and outlet temperatures using Dallas temperature sensors
+  - platform: dallas_temp
+    address: 0x610000000d8d5528
+    id: exhaust
+    name: "Exhaust"
+    icon: "mdi:home-roof"
+    update_interval: 5s
+
+  - platform: dallas_temp
+    address: 0xdb0000000c314528
+    name: "CH Inlet"
+    icon: "mdi:water-thermometer"
+    update_interval: 5s
+
+  - platform: dallas_temp
+    address: 0xbd0000000ce6f728
+    name: "CH Outlet"
+    icon: "mdi:water-thermometer-outline"
+    update_interval: 5s
+
+  # Add a sensor to monitor WiFi signal strength
+  - platform: wifi_signal
+    name: "WiFi Signal Strength"
+    icon: "mdi:wifi"
+    update_interval: 60s

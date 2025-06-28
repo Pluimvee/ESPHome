@@ -1,5 +1,5 @@
 # Copyright (c) 2025 Pluimvee
-# Resideo ESPHome configuration 
+# Aqua Heatpump configuration 
 
 # First some basic configuration
 #--------------------------------------------
@@ -11,7 +11,7 @@ esp8266:
   board: esp8285
 
 # Enable Home Assistant API
-# AT THE BOTTOM OF THE FILE, AFTER ALL SENSORS AND SWITCHES
+# LOCATED BELOW AS WE DEFINED SOME SERVICES
 
 # Allow Over-The-Air updates
 ota:
@@ -50,70 +50,91 @@ i2c:
   scl: GPIO5  # D1
   scan: true
 
+# Reading the sensors each 10seconds
 sensor:
   - platform: aht10
     temperature:
       name: "Air In"
       id: air_in_temp
+      icon: "mdi:home-thermometer-outline"
     humidity:
       name: "Air Humidity"
       id: air_humidity
+      icon: "mdi:water-percent"
     update_interval: 10s
 
   - platform: dallas_temp
     address: 0xe5858dc935646128
     id: boiler_temp
+    icon: "mdi:gas-burner"
     name: "Boiler"
-    update_interval: 10s
+    update_interval: 5s
   - platform: dallas_temp
     address: 0x87b7b1c935646128  
     id: air_out_temp
     name: "Air Out"
-    update_interval: 10s
+    icon: "mdi:snowflake-thermometer"
+    update_interval: 5s
   - platform: dallas_temp
     address: 0x6a0000000cbd5528  
     id: water_mixed_temp
     name: "Water Mixed"
-    update_interval: 10s
+    icon: "mdi:water-sync"
+    update_interval: 5s
   - platform: dallas_temp
     address: 0x8e0000000d134d28  
     id: water_out_temp
+    icon: "mdi:water-thermometer-outline"
     name: "Water Out"
-    update_interval: 10s
+    update_interval: 5s
   - platform: dallas_temp
     address: 0x960000000aa6db28  
     id: water_in_temp
+    icon: "mdi:water-thermometer"
     name: "Water In"
-    update_interval: 10s
+    update_interval: 5s
     
   # Add a sensor to monitor WiFi signal strength
   - platform: wifi_signal
     name: "WiFi Signal Strength"
     update_interval: 60s
+    icon: "mdi:wifi"
 
 # GPIO outputs
 switch:
   # The Solar mode (PV) which lets the WPB to run longer
   - platform: gpio
     pin: GPIO14  # D5
-    id: eco_heat
-    name: "Eco Heat"
-    restore_mode: RESTORE_DEFAULT_OFF
+    id: solar_switch
+    name: "Solar Mode"
+    icon: "mdi:solar-power"
+    restore_mode: ALWAYS_OFF
     inverted: false  # Active HIGH using Optocoupler
+    on_turn_on:
+      - script.execute: solar_heating_auto_off
+    on_turn_off:
+      - script.stop: solar_heating_auto_off
 
-  # The internal boost element, hidden switch to prevent accidental activation
+  # The internal heating element
   - platform: gpio
     pin: GPIO12  # D6
+    name: "Booster Mode"
     inverted: false  # Active HIGH using Optocoupler
     id: boost_switch
+    icon: "mdi:heating-coil"
     restore_mode: ALWAYS_OFF
-    internal: true
+    on_turn_on:
+      - script.execute: booster_heating_auto_off
+    on_turn_off:
+      - script.stop: booster_heating_auto_off
 
   # vent medium switch
+  # can be manually adjusted, but will turn back to automated state after 15 minutes
   - platform: gpio
     pin: GPIO16  # D0
     id: vent_medium
     name: "Vent Medium"
+    icon: "mdi:fan-speed-2"
     restore_mode: RESTORE_DEFAULT_ON
     inverted: true  # Active LOW using Solid State Relais
     on_turn_on:
@@ -122,10 +143,12 @@ switch:
       - lambda: 'id(stable_timer) = millis();'
 
   # vent medium high switch
+  # can be manually adjusted, but will turn back to automated state after 15 minutes
   - platform: gpio
     pin: GPIO2  # D4
     id: vent_high
     name: "Vent High"
+    icon: "mdi:fan-speed-3"
     restore_mode: RESTORE_DEFAULT_OFF
     inverted: true  # Active LOW using Solid State Relais
     on_turn_on:
@@ -133,31 +156,26 @@ switch:
     on_turn_off:
       - lambda: 'id(stable_timer) = millis();'
 
-  # Boost switch to trigger the booster script
-  - platform: template
-    name: "Boost"
-    turn_on_action:
-      - logger.log: "Booster triggered"
-      - script.execute: booster
-
 #Some binanry sensors
 binary_sensor:
   - platform: template
-    name: "Booster"
+    name: "Water Hot"
+    device_class: heat
+    icon: "mdi:water-alert"
     lambda: |-
-      return id(boost_switch).state;
-  - platform: template
-    name: "Hot Water Use"
-    lambda: |-
-      return id(hot_water_use);
+      return id(water_hot);
   - platform: template
     name: "Air Humid"
+    icon: "mdi:water-percent-alert"
+    device_class: moisture
     lambda: |-
       return id(air_humid);
   - platform: template
-    name: "Heatpump"
+    name: "Air Cold"
+    icon: "mdi:snowflake-alert"
+    device_class: cold
     lambda: |-
-      return id(wpb_running);
+      return id(air_cold);
 
 # Automations
 globals:
@@ -165,11 +183,11 @@ globals:
     type: float
     restore_value: no
     initial_value: '0.0'
-  - id: hot_water_use
+  - id: water_hot
     type: bool
     restore_value: no
     initial_value: 'false'
-  - id: wpb_running
+  - id: air_cold
     type: bool
     restore_value: no
     initial_value: 'false'
@@ -184,7 +202,7 @@ globals:
 
 # Automations
 interval:
-  # turn off boost (element) when boiler temperature is above 80°C
+  # SAFETY: When the boiler temperature is above 80°C, turn off the boost switch
   - interval: 1min
     then:
       - if:
@@ -198,43 +216,52 @@ interval:
                   - id(boiler_temp).state
                 level: WARN
 
-  # Set flags and handle ventilation logic
-  - interval: 1s
+  # The vent can be set manually, after 15 minutes it will turn back into automated state
+  # It will also turn into automated state when an event happens in the following
+  # We detect 
+  # - hot water (water usage) if water mixed temperature is higher than air in temperature by 5 degrees
+  # - air cold (heat pump running) if air in temperature is higher than air out temperature by 1 degree
+  # - air humid (moisture) if air humidity is higher than base humidity by 5%
+  # The automated state is the following
+  # - Ventilation High: When hot water is consumed
+  # - Ventilation Medium: When moisture detected or heatpump is running
+  # - default Ventilation: When nothing is detected
+  - interval: 2s
     then:
       - lambda: |-
+          if (id(base_humidity) == 0.0  && !isnan(id(air_humidity).state)){
+            id(base_humidity) = id(air_humidity).state;
+            ESP_LOGI("humidity", "Base humidity initialized to %.2f%%", id(base_humidity));
+          }                         
           // Nieuwe vlagwaarden
           bool new_hot = (id(water_mixed_temp).state > id(air_in_temp).state + 5.0);  // als mixed water 5 graden warmer dan lucht temperature
-          bool new_wpb = (id(air_in_temp).state) > id(air_out_temp).state + 1.0;      // als lucht uit temperatuur 1 of meer graad lager is dan lucht in temperatuur
+          bool new_cold = (id(air_in_temp).state) > id(air_out_temp).state + 1.0;      // als lucht uit temperatuur 1 of meer graad lager is dan lucht in temperatuur
           bool new_hum = (id(air_humidity).state > id(base_humidity) + 5.0);          // als luchtvochtigheid 5% hoger is dan basisvochtigheid
 
           // Detecteer veranderingen
-          bool changed = (new_hot != id(hot_water_use)) ||
-                        (new_wpb != id(wpb_running)) ||
-                        (new_hum != id(air_humid));
+          bool changed = (new_hot != id(water_hot)) ||
+                         (new_cold != id(air_cold)) ||
+                         (new_hum != id(air_humid));
 
           // Zet flags
-          id(hot_water_use) = new_hot;
-          id(wpb_running) = new_wpb;
+          id(water_hot) = new_hot;
+          id(air_cold) = new_cold;
           id(air_humid) = new_hum;
 
-          // Counter resetten bij wijziging
-          if (changed)
-            id(stable_timer) = millis();
-          
           uint32_t elapsed = (millis() - id(stable_timer)) / 60000;  // in minuten
 
           // Base_humidity bijwerken als al 15 minuten niks gebeurd is, en dan iedere 15 minuten
-          if ((id(base_humidity) == 0.0 || elapsed > 10) && !new_hot && !new_hum) {
+          if (elapsed > 15 && !id(water_hot) && !id(air_humid)) {
             id(base_humidity) = id(air_humidity).state;
             ESP_LOGI("humidity", "Base humidity set to %.2f%%", id(base_humidity));
           }
-          // Ventilatie aansturen als iets veranderd is of elke 10 minuten
-          if (changed || elapsed > 10) {
-            if (id(hot_water_use)) {
+          // Ventilatie aansturen als iets veranderd is of elke 15 minuten
+          if (changed || elapsed > 15) {
+            if (id(water_hot)) {
               id(vent_high).turn_on();
               id(vent_medium).turn_off();
               ESP_LOGI("vent", "Vent High ON (hot water)");
-            } else if (id(air_humid) || id(wpb_running)) {
+            } else if (id(air_humid) || id(air_cold)) {
               id(vent_high).turn_off();
               id(vent_medium).turn_on();
               ESP_LOGI("vent", "Vent Medium ON (humid or wpb)");
@@ -243,34 +270,70 @@ interval:
               id(vent_medium).turn_off();
               ESP_LOGI("vent", "All ventilation OFF");
             }
-          }
-          if (elapsed > 10) {
-            ESP_LOGI("status", "Base humidity: %0.2f, Hot Water Use: %s, WPB Running: %s, Air Humid: %s",
-                     id(base_humidity),
-                     id(hot_water_use) ? "Yes" : "No",
-                     id(wpb_running) ? "Yes" : "No",
-                     id(air_humid) ? "Yes" : "No");
+            ESP_LOGI("status", "Base humidity: %0.2f, Water Hot: %s, Air Cold: %s, Air Humid: %s",
+                    id(base_humidity),
+                    id(water_hot) ? "Yes" : "No",
+                    id(air_cold) ? "Yes" : "No",
+                    id(air_humid) ? "Yes" : "No");
+            
+            // reset timer when change occured or when 15 minutes passed
             id(stable_timer) = millis();
           }
+
+# Some scripts
 script:
-# Booster element script
-# This script is triggered by the Boost switch and runs for a specified duration
-  - id: booster
+  # This script is triggered by the switch or service to turn off boosting automaticly
+  # it will only turn off if the boiler temperature is below 80 degrees
+  - id: booster_heating_auto_off
     mode: restart
     then:
-      - logger.log: "Booster started"
-      - switch.turn_on: boost_switch
-      - delay: 15min  # Set your desired boost duration
-      - switch.turn_off: boost_switch
-      - logger.log: "Booster finished"
+      - if:
+          condition:
+            lambda: 'return id(boiler_temp).state < 80.0;'
+          then:      
+            - logger.log:
+                level: INFO
+                format: "Booster heating timer started"
+            - delay: 15min  # Set your desired boost duration
+            - switch.turn_off: boost_switch
+            - logger.log:
+                level: INFO 
+                format: "Booster heating auto off"
+          else:
+          - logger.log:
+              level: WARN
+              format: "Booster heating blocked (%.1f°C)"
+              args: [ id(boiler_temp).state ]
+          - switch.turn_off: boost_switch
+
+  # This script is triggered by the switch or service to turn off solar_heating automaticly
+  - id: solar_heating_auto_off
+    mode: restart
+    then:
+      - logger.log:
+          level: INFO 
+          format: "Solar heating timer started"
+      - delay: 15min  # Set your desired eco-mode duration
+      - switch.turn_off: solar_switch
+      - logger.log:
+          level: INFO 
+          format: "Solar heating auto off"
   
-# Expose a service to reset (restart) the booster remotely
+# Expose some services
 api:
   encryption:
     key: !secret api_key
   services:
-    - service: boost
+    # boost mode
+    - service: boost_heating
       then:
-        - logger.log:
-            format: "Booster triggered"
-        - script.execute: booster                          
+        - logger.log: "Boost heating service called"
+        - switch.turn_on: boost_switch              # when boost_switch already on it will not trigger on_turn_on event
+        - script.execute: booster_heating_auto_off  # so we need to execute the auto_turn_off script to restart the timer
+    
+    # solar heating mode
+    - service: solar_heating
+      then:
+        - logger.log: "Solar heating service called"
+        - switch.turn_on: solar_switch
+        - script.execute: solar_heating_auto_off # same here, we need to restart the timer

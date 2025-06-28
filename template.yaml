@@ -1,0 +1,95 @@
+# Copyright (c) 2025 Pluimvee
+# Configuration Template
+
+# First some basic configuration
+#--------------------------------------------
+esphome:
+  name: template
+  friendly_name: Template
+  on_boot:
+    priority: -100  # Zorgt dat dit als laatste gebeurt (na WiFi, tijd, etc.)
+    then:
+
+esp8266:
+  board: esp01_1m
+
+# Enable logging
+logger:
+  level: INFO
+  baud_rate: 0
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: !secret api_key
+
+# Allow Over-The-Air updates
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+# Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Fallback Hotspot"
+    password: !secret wifi_ap_password
+
+captive_portal:
+
+# Enable web server for debugging and control
+web_server:
+    port: 80
+    version: 3
+
+# and now we are adding the functionality of this device
+#--------------------------------------------
+# -- SNTP Time Setup --
+time:
+  - platform: sntp
+    id: sntp_time
+    timezone: Europe/Amsterdam  # CET/CEST (handles DST automatically)
+
+# -- Global variables --
+globals:
+  - id: variable
+    type: float
+    restore_value: yes
+    initial_value: '0.0'
+
+
+script:
+  - id: script_id 
+    mode: restart
+    then:
+      - delay: 30s
+
+sensor:
+  # Add a sensor to monitor WiFi signal strength
+  - platform: wifi_signal
+    name: "WiFi Signal Strength"
+    icon: "mdi:wifi"
+    update_interval: 60s
+
+# -- Water meter edge detection --
+binary_sensor:
+  - platform: gpio
+    pin: GPIO05
+    name: "X"
+    id: x
+    icon: mdi:format-rotate-90
+    filters:
+      - delayed_on: 200ms
+      - delayed_off: 200ms
+    on_press:
+      - lambda: |-
+    on_release:
+      - lambda: |-
+
+# -- Midnight reset --
+interval:
+  - interval: 60s
+    then:
+      - lambda: |-
