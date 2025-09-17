@@ -3,14 +3,20 @@
 
 # First some basic configuration
 #--------------------------------------------
+substitutions:
+  device_id: water-meter
+  build_root: !secret build_root
+
 esphome:
-  name: water-meter
+  name: ${device_id}
+  build_path: ${build_root}/${device_id}  
   friendly_name: Water Meter
   on_boot:
     priority: -100  # Zorgt dat dit als laatste gebeurt (na WiFi, tijd, etc.)
     then:
       - lambda: |-
           id(water_used_total) = id(water_used_total_persisted);  // Restore from persistent storage
+          id(last_pulse_time) = millis();  // Initialize last pulse time
 
 esp8266:
   board: esp01_1m
@@ -69,17 +75,29 @@ globals:
   - id: water_used_today
     type: float
     restore_value: no # Do not persist flash read/writes is limited (100k)
+    initial_value: '53.56'
+
+  - id: water_flow
+    type: float
+    restore_value: no # Do not persist 
     initial_value: '0.0'
 
-  - id: prev_liters
-    type: float
+  - id: last_pulse_time
+    type: uint32_t
+    initial_value: '0'
+  - id: last_rising_time
+    type: uint32_t
     initial_value: '0'
 
 script:
   - id: delayed_save # anti-wear script
     mode: restart
     then:
-      - delay: 30s
+      - delay: 10s
+      - lambda: |-
+          // Save the current water_used_total to persistent storage
+          id(water_flow) = 0.0;  
+      - delay: 20s
       - lambda: |-
           // Save the current water_used_total to persistent storage
           id(water_used_total_persisted) = id(water_used_total);
@@ -125,11 +143,7 @@ sensor:
     icon: "mdi:water-pump"
     update_interval: 5s
     lambda: |-
-      float delta = 0;
-      if (id(prev_liters) >0 && id(water_used_today) > id(prev_liters))
-        delta = id(water_used_today) - id(prev_liters);
-      id(prev_liters) = id(water_used_today);
-      return delta * 12;  // Convert to L/min (5s interval, so multiply by 12)
+      return id(water_flow);
 
 # -- Water meter edge detection --
 binary_sensor:
@@ -143,17 +157,39 @@ binary_sensor:
       - delayed_off: 200ms
     on_press:
       - lambda: |-
-          id(water_used_total) += 0.33 / 1000.0;   // 0.33 L, convert to m³
-          id(water_used_today) += 0.33;
+          uint32_t now = millis();
+          id(water_used_total) += 0.435 / 1000.0;   // 0.33 L, convert to m³
+          id(water_used_today) += 0.435;
           id(total).publish_state(id(water_used_total));
           id(today).publish_state(id(water_used_today));
+
+          // last_rising_time has last on_press time
+          // now has the current on_press
+          // 1 cycle is now - last_rising_time
+          uint32_t cycle_time = now - id(last_rising_time);
+
+          // last_pulse_time has last on_release
+          // now has the current on_press
+          uint32_t on_cycle_time = now - id(last_pulse_time);
+
+          // Calculate the pulse fraction
+          float pulse_fraction = (float)on_cycle_time / (float)cycle_time;
+          ESP_LOGI("water_meter", "Pulse fraction: %0.4f, Cycle time: %d ms, On cycle time: %d ms", pulse_fraction, cycle_time, on_cycle_time);
+
+          id(water_flow) = (0.435 * 60000) / (now - id(last_pulse_time));
+          id(last_pulse_time) = now;
+          id(last_rising_time) = now;
       - script.execute: delayed_save
     on_release:
       - lambda: |-
-          id(water_used_total) += 0.67 / 1000.0;   // 0.67 L, convert to m³
-          id(water_used_today) += 0.67;
+          uint32_t now = millis();
+          id(water_used_total) += 0.565 / 1000.0;   // 0.67 L, convert to m³
+          id(water_used_today) += 0.565;
           id(total).publish_state(id(water_used_total));
           id(today).publish_state(id(water_used_today));
+
+          id(water_flow) = (0.565 * 60000) / (now - id(last_pulse_time));
+          id(last_pulse_time) = now;
       - script.execute: delayed_save
 
 # -- Midnight reset for "Water Used Today" --

@@ -3,8 +3,13 @@
 
 # First some basic configuration
 #--------------------------------------------
+substitutions:
+  device_id: resideo-woonkamer
+  build_root: !secret build_root
+
 esphome:
-  name: resideo-woonkamer
+  name: ${device_id}
+  build_path: ${build_root}/${device_id}  
   friendly_name: Resideo Woonkamer
 
 esp8266:

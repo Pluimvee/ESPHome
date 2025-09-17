@@ -3,8 +3,13 @@
 
 # First some basic configuration
 #--------------------------------------------
+substitutions:
+  device_id: intergas-boiler
+  build_root: !secret build_root
+
 esphome:
-  name: intergas-boiler
+  name: ${device_id}
+  build_path: ${build_root}/${device_id}  
   friendly_name: Intergas HRE24/18
 
 esp8266:
@@ -12,7 +17,7 @@ esp8266:
 
 # Enable logging
 logger:
-  level: DEBUG
+  level: INFO
   baud_rate: 0  # we need the uart
 
 # Enable Home Assistant API
@@ -53,6 +58,7 @@ switch:
       number: GPIO2
       mode: output
     id: led
+    inverted: true
 
 uart:
   id: intergas_serial
@@ -63,9 +69,9 @@ uart:
 
 # Some code to allow communicating with the Intergas Boiler
 external_components:
-  # - source: github://Pluimvee/esphome-intergas
-  - source: C:/Users/erikv/OneDrive/Archive/Erik/Hobby/ESPHome/components/esphome-intergas/components
-    refresh: 1min
+  - source: github://Pluimvee/esphome-intergas
+  # - source: C:/Users/erikv/OneDrive/Archive/Erik/Hobby/ESPHome/components/esphome-intergas/components
+  # refresh: 1min
 
 # the intergas communicaiton module
 intergas_boiler:
@@ -76,6 +82,13 @@ text_sensor:
   - platform: intergas_boiler
     mode:
       name: "Operating Mode"
+
+interval:
+  - interval: 3s
+    then:
+      - switch.turn_on: led
+      - delay: 500ms
+      - switch.turn_off: led
 
 binary_sensor:
   - platform: intergas_boiler

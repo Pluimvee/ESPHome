@@ -3,8 +3,13 @@
 
 # First some basic configuration
 #--------------------------------------------
+substitutions:
+  device_id: resideo-zolder
+  build_root: !secret build_root
+
 esphome:
-  name: resideo-zolder
+  name: ${device_id}
+  build_path: ${build_root}/${device_id}  
   friendly_name: Resideo Zolder
 
 esp8266:

@@ -4,16 +4,16 @@
 # First some basic configuration
 #--------------------------------------------
 substitutions:
-  device_id: aqua-heatpump  
+  device_id: aqua-heatpump-32
   build_root: !secret build_root
 
 esphome:
   name: ${device_id}
-  friendly_name: Warmtepomp boiler
   build_path: ${build_root}/${device_id}  
+  friendly_name: Warmtepomp boiler
 
-esp8266:
-  board: esp8285
+esp32:
+  board: esp32dev
 
 # Enable Home Assistant API
 # LOCATED BELOW AS WE DEFINED SOME SERVICES
@@ -24,6 +24,7 @@ ota:
     password: !secret ota_password
 
 wifi:
+  reboot_timeout: 5min
   ssid: !secret wifi_ssid
   password: !secret wifi_password
 # Enable fallback hotspot (captive portal) in case wifi connection fails
@@ -40,7 +41,7 @@ web_server:
 
 # Enable logging
 logger:
-  level: INFO  
+  level: DEBUG  
   # baud_rate: 0  # Disable logging on UART (as we need the UART)
 
 # NOW the device specific logic begins
@@ -51,8 +52,8 @@ one_wire:
 
 # I²C bus (AHT10)
 i2c:
-  sda: GPIO4  # D2
-  scl: GPIO5  # D1
+  sda: GPIO21  # D2
+  scl: GPIO22  # D1
   frequency: 50kHz
   scan: true
 
@@ -110,7 +111,7 @@ sensor:
 switch:
   # The Solar mode (PV) which lets the WPB to run longer
   - platform: gpio
-    pin: GPIO14  # D5
+    pin: GPIO18  # D5
     id: solar_switch
     name: "Solar Mode"
     icon: "mdi:solar-power"
@@ -123,7 +124,7 @@ switch:
 
   # The internal heating element
   - platform: gpio
-    pin: GPIO12  # D6
+    pin: GPIO19  # D6
     name: "Booster Mode"
     inverted: false  # Active HIGH using Optocoupler
     id: boost_switch
@@ -137,7 +138,7 @@ switch:
   # vent medium switch
   # can be manually adjusted, but will turn back to automated state after 15 minutes
   - platform: gpio
-    pin: GPIO2  # D4
+    pin: GPIO0  # D0
     id: vent_medium
     name: "Vent Medium"
     icon: "mdi:fan-speed-2"
@@ -148,10 +149,10 @@ switch:
     on_turn_off:
       - lambda: 'id(stable_timer) = millis();'
 
-  # vent high switch
+  # vent medium high switch
   # can be manually adjusted, but will turn back to automated state after 15 minutes
   - platform: gpio
-    pin: GPIO16  # D0
+    pin: GPIO2  # D4
     id: vent_high
     name: "Vent High"
     icon: "mdi:fan-speed-3"
@@ -343,3 +344,7 @@ api:
         - logger.log: "Solar heating service called"
         - switch.turn_on: solar_switch
         - script.execute: solar_heating_auto_off # same here, we need to restart the timer
+
+button:
+  - platform: restart
+    name: "Restart Aqua Heatpump"

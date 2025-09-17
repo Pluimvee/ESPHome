@@ -3,8 +3,13 @@
 
 # First some basic configuration
 #--------------------------------------------
+substitutions:
+  device_id: modbus-bridge
+  build_root: !secret build_root
+
 esphome:
-  name: modbus-bridge
+  name: ${device_id}
+  build_path: ${build_root}/${device_id}  
   friendly_name: ModBus Bridge
 
 esp8266:

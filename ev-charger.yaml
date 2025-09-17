@@ -3,8 +3,13 @@
 
 # First some basic configuration
 #--------------------------------------------
+substitutions:
+  device_id: ev-charger
+  build_root: !secret build_root
+
 esphome:
-  name: ev-charger
+  name: ${device_id}
+  build_path: ${build_root}/${device_id}  
   friendly_name: SmartEVCharger
 
 esp8266:
@@ -23,7 +28,7 @@ api:
 # Allow Over-The-Air updates
 ota:
   - platform: esphome
-    password: !secret ota_evcharger
+    password: !secret ota_password
 
 wifi:
   ssid: !secret wifi_ssid

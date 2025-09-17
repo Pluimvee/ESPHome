@@ -1,0 +1,198 @@
+# Copyright (c) 2025 Pluimvee
+# Configuration Template
+
+# First some basic configuration
+#--------------------------------------------
+substitutions:
+  device_id: power-plug-w1
+  build_root: !secret build_root
+
+esphome:
+  name: ${device_id}
+  build_path: ${build_root}/${device_id}  
+  friendly_name: Power Plug White 1
+  on_boot:
+    priority: -100  # Zorgt dat dit als laatste gebeurt (na WiFi, tijd, etc.)
+    then:
+      - lambda: |-
+          id(energy_total) = id(energy_total_persisted);  // Restore from persistent storage
+
+esp8266:
+  board: esp8285
+
+# Enable logging
+logger:
+  level: DEBUG
+  baud_rate: 0
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: !secret api_key
+
+# Allow Over-The-Air updates
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+# Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "PowerPlug Hotspot"
+    password: !secret wifi_ap_password
+
+captive_portal:
+
+# Enable web server for debugging and control
+web_server:
+    port: 80
+    version: 3
+
+# and now we are adding the functionality of this device
+#--------------------------------------------
+# -- SNTP Time Setup --
+time:
+  - platform: sntp
+    id: sntp_time
+    timezone: Europe/Amsterdam  # CET/CEST (handles DST automatically)
+
+# -- some globals for energy today, and total. --
+globals:
+  - id: energy_total_persisted  # anti-flash-wearing
+    type: float
+    restore_value: yes
+    initial_value: '0.0'
+  - id: energy_total
+    type: float
+    restore_value: no
+    initial_value: '0.0'
+  - id: energy_today
+    type: float
+    restore_value: no
+    initial_value: '0.0'
+
+# -- anti flash-wearing logic to persist the total energy used --
+interval:
+  - interval: 60s
+    then:
+      - lambda: |-
+          if (fabs(id(energy_total_persisted) - id(energy_total)) > 0.1) {
+            id(energy_total_persisted) = id(energy_total);
+            ESP_LOGI("Persist", "Total energy usage %.2f persisted", id(energy_total_persisted));
+          }
+  # -- Midnight reset for "Energy Used Today" --
+  - interval: 60s
+    then:
+      - lambda: |-
+          static int last_day = -1;
+          auto time = id(sntp_time).now();
+          if (time.is_valid()) {
+            // initialize last_day after boot
+            if (last_day == -1) {
+              last_day = time.day_of_year;
+            }
+            // Reset energy_today at midnight
+            if (time.day_of_year != last_day) {
+              last_day = time.day_of_year;
+              id(energy_today) = 0;
+              id(sensor_today).publish_state(id(energy_today));
+            }
+          }
+
+# -- the sensors --
+sensor:
+  # Add a sensor to monitor WiFi signal strength
+  - platform: wifi_signal
+    name: "WiFi Signal Strength"
+    icon: "mdi:wifi"
+    update_interval: 60s
+
+  # BL0937 power and voltage sensor
+  - platform: hlw8012
+    model: "BL0937"
+    sel_pin:
+      number: GPIO12
+      inverted: true
+    cf_pin: GPIO4
+    cf1_pin: GPIO5
+    current_resistor: 0.0011
+    voltage_divider: 1521
+    update_interval: 3s
+    change_mode_every: 4
+
+    current:
+      name: "Current"
+      filters:
+        - multiply: 0.88
+    voltage:
+      name: "Voltage"
+    power:
+      name: "Power"
+    energy:
+      name: "Energy"
+      id: energy
+      on_value:
+          then:
+            - lambda: |-
+                static float last = 0.0;
+                float current = id(energy).state;
+                float delta = current - last;
+                if (delta > 0 && delta < 100) {  // sanity check 100Wh in 3s = 120kWh
+                  id(energy_total) += delta/1000.0; // to kWh
+                  id(energy_today) += delta/1000.0; // to kWh
+                }
+                last = current;
+  
+  # the total and today energy sensors
+  - platform: template
+    id: sensor_total
+    name: "Energy Total"
+    unit_of_measurement: "kWh"
+    accuracy_decimals: 2
+    lambda: |-
+      return id(energy_total);
+  - platform: template
+    name: "Energy Today"
+    id: sensor_today
+    unit_of_measurement: "kWh"
+    accuracy_decimals: 2
+    lambda: |-
+      return id(energy_today);
+
+# relais      
+switch:
+  - platform: gpio
+    pin: GPIO14
+    name: "Switch"
+    id: relais
+
+binary_sensor:
+  - platform: status
+    name: "Status"
+
+  #power button
+  - platform: gpio
+    pin:
+      number: GPIO13
+      mode: INPUT_PULLUP
+      inverted: true
+    name: "Power"
+    id: power_btn
+    internal: true
+    on_multi_click:
+      - timing:
+          - ON for at most 500ms
+        then:
+          - switch.toggle: relais
+
+      - timing:
+          - ON for at least 5s
+        then:
+          - lambda: |-
+              id(energy_total) = 0.0;
+              id(energy_today) = 0.0;
+              ESP_LOGI("reset", "Total energy reset to 0.0kWh !");
+
