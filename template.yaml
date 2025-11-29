@@ -15,8 +15,17 @@ esphome:
     priority: -100  # Zorgt dat dit als laatste gebeurt (na WiFi, tijd, etc.)
     then:
 
-esp8266:
-  board: esp01_1m
+# board definitie. Bewust alle definities zodat de error een keuze forceert
+esp32:
+  board: esp32dev # ESP32 Dev Module, 4MB flash
+  framework:
+    type: esp-idf
+    
+esp8266:  
+  board: esp8285  # 1MB flash iternally
+  board: esp12e   # 4MB flash
+  board: d1_mini  # 4MB flash, wemos pin definitions
+  board: esp01_1m # 1MB flash, 512kb SPIFFS
 
 # Enable logging
 logger:

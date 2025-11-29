@@ -1,0 +1,156 @@
+# Copyright (c) 2025 Pluimvee
+# Configuration Template
+
+# First some basic configuration
+#--------------------------------------------
+substitutions:
+  device_id: p1-solis-bridge
+  build_root: !secret build_root
+
+esphome:
+  name: ${device_id}
+  build_path: ${build_root}/${device_id}  
+  friendly_name: P1 Solis Metering Bridge
+
+esp32:
+  board: esp32dev # ESP32 Dev Module, 4MB flash
+  framework:
+    type: esp-idf
+
+# Enable logging
+logger:
+  level: DEBUG
+  baud_rate: 0
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: !secret api_key
+
+# Allow Over-The-Air updates
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+# mDNS expliciet aan laten
+mdns:
+  disabled: false
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  # Sneller verbinden als je alleen 2.4 GHz gebruikt / SSID niet hidden is
+  fast_connect: true
+  power_save_mode: none
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "P1SolisBridge Hotspot"
+    password: !secret wifi_ap_password
+
+captive_portal:
+
+# Enable web server for debugging and control
+web_server:
+    port: 80
+    version: 3
+
+# and now we are adding the functionality of this device
+#--------------------------------------------
+# -- SNTP Time Setup --
+time:
+  - platform: sntp
+    id: sntp_time
+    timezone: Europe/Amsterdam  # CET/CEST (handles DST automatically)
+
+external_components:
+  # - source: github://Pluimvee/esphome-intergas
+  - source: C:/Users/erikv/OneDrive/Archive/Erik/Hobby/ESPHome/components/esphome-p1-sdm630/components
+    refresh: 1min
+
+uart:
+  # P1 DSMR (pas aan aan jouw meter)
+  - id: uart_p1
+    rx_pin:
+      number: GPIO18
+      inverted: true
+    baud_rate: 115200     # DSMR v5.x = 115200 8N1; v2/4 vaak 9600 7E1
+    data_bits: 8
+    parity: NONE
+    stop_bits: 1
+    rx_buffer_size: 4096
+
+  # RS-485 naar Solis (SDM630 emulator)
+  - id: uart_rs485
+    rx_pin: GPIO16
+    tx_pin: GPIO17
+    baud_rate: 9600       # SDM630 default
+    data_bits: 8
+    parity: NONE
+    stop_bits: 1
+    rx_buffer_size: 512
+    # debug:
+
+# De bridge-component
+p1_sdm630:
+  time_id: sntp_time  # Optioneel, maar aanbevolen voor DSMR-tijdstempels
+  p1_uart_id: uart_p1
+  rs485_uart_id: uart_rs485
+  rs485_address: 1   # Pas aan indien nodig (1-247)
+  recalc_current: true  # Indien jouw DSMR meter geen actuele stroom meet, zet op true om deze te herberekenen
+
+# Sensors die de component publiceert
+sensor:
+  # Add a sensor to monitor WiFi signal strength
+  - platform: wifi_signal
+    name: "WiFi Signal Strength"
+    icon: "mdi:wifi"
+    update_interval: 60s
+
+  - platform: p1_sdm630
+    frequency:
+      name: "Grid Frequency (Hz)"
+    power_total:
+      name: "Power Total"
+    energy_total:
+      name: "Energy Total (kWh)"
+    energy_import:
+      name: "Energy Import (kWh)"
+    energy_export:
+      name: "Energy Export (kWh)"
+    voltage_l1:
+      name: "Phase A Voltage"
+    voltage_l2:
+      name: "Phase B Voltage"
+    voltage_l3:
+      name: "Phase C Voltage"
+    current_l1:
+      name: "Phase A Current"
+    current_l2:
+      name: "Phase B Current"
+    current_l3:
+      name: "Phase C Current"
+    power_l1:
+      name: "Phase A Power"
+    power_l2:
+      name: "Phase B Power"
+    power_l3:
+      name: "Phase C Power"
+
+binary_sensor:
+  - platform: p1_sdm630
+    solis_active:
+      name: "Solis Active"
+    dsmr_active:
+      name: "DSMR Active"
+
+text_sensor:
+  - platform: p1_sdm630
+    mode:
+      name: "Bridge mode"
+
+# Runtime wijzigbare instelling via HA (select)
+select:
+  - platform: p1_sdm630
+    mode:
+      name: "Bridge mode"   # options: auto, force_dsmr, force_solis

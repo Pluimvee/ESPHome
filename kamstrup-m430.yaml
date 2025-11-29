@@ -1,0 +1,107 @@
+# Copyright (c) 2025 Pluimvee
+# Configuration Template
+
+# First some basic configuration
+#--------------------------------------------
+substitutions:
+  device_id: kamstrup-test
+  build_root: !secret build_root
+
+esphome:
+  name: ${device_id}
+  build_path: ${build_root}/${device_id}  
+  friendly_name: Kamstrup Multical430
+
+esp32:
+  board: esp32dev # ESP32 Dev Module, 4MB flash
+  framework:
+    type: esp-idf
+
+# Enable logging
+logger:
+  level: DEBUG
+  baud_rate: 0
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: !secret api_key
+
+# Allow Over-The-Air updates
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+# mDNS expliciet aan laten
+mdns:
+  disabled: false
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  # Sneller verbinden als je alleen 2.4 GHz gebruikt / SSID niet hidden is
+  fast_connect: true
+  power_save_mode: none
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Kamstrup Multical430 Hotspot"
+    password: !secret wifi_ap_password
+
+captive_portal:
+
+# Enable web server for debugging and control
+web_server:
+    port: 80
+    version: 3
+
+# and now we are adding the functionality of this device
+#--------------------------------------------
+# -- SNTP Time Setup --
+time:
+  - platform: sntp
+    id: sntp_time
+    timezone: Europe/Amsterdam  # CET/CEST (handles DST automatically)
+
+external_components:
+  # - source: github://Pluimvee/esphome-intergas
+  - source: C:/Users/erikv/OneDrive/Archive/Erik/Hobby/ESPHome/components/esphome-p1-sdm630/components
+    refresh: 1min
+
+uart:
+  - id: uart_kamstrup
+    rx_pin: GPIO16
+    tx_pin: GPIO17
+    baud_rate: 1200
+    data_bits: 8
+    parity: NONE
+    stop_bits: 2
+    rx_buffer_size: 512
+    debug:
+
+# Sensors die de component publiceert
+sensor:
+  # Add a sensor to monitor WiFi signal strength
+  - platform: wifi_signal
+    name: "WiFi Signal Strength"
+    icon: "mdi:wifi"
+    update_interval: 60s
+
+  - platform: kamstrup_kmp
+    uart_id: uart_kamstrup
+    update_interval: 60s
+    heat_energy:
+      name: "Kamstrup Heat Energy"
+      icon: "mdi:fire"
+      unit_of_measurement: "GJ"
+      accuracy_decimals: 3
+    flow:
+      name: "Kamstrup Flow"
+      icon: "mdi:water-pump"
+      unit_of_measurement: "m³/h"
+      accuracy_decimals: 3
+    power:
+      name: "Kamstrup Power"
+      icon: "mdi:flash"
+      unit_of_measurement: "kW"
+      accuracy_decimals: 1

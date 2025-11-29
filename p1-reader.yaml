@@ -1,0 +1,148 @@
+# Copyright (c) 2025 Pluimvee
+# Smart Meter reader using P1 port of the meter
+
+# First some basic configuration
+#--------------------------------------------
+substitutions:
+  device_id: p1-reader
+  build_root: !secret build_root
+
+esphome:
+  name: ${device_id}
+  build_path: ${build_root}/${device_id}  
+  friendly_name: Smart Meter P1 reader
+
+esp8266:
+  board: esp12e
+
+# Enable logging
+logger:
+  level: INFO
+  baud_rate: 0  #free UART0; no serial logs
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: !secret api_key
+
+# Allow Over-The-Air updates
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  min_auth_mode: WPA2
+# Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "P1Reader Hotspot"
+    password: !secret wifi_ap_password
+
+captive_portal:
+
+# # Enable web server for debugging and control
+web_server:
+    port: 80
+    version: 3
+
+# and now we are adding the functionality of this device
+#--------------------------------------------
+globals:
+  - id: p1_buf
+    type: std::string
+    restore_value: no
+    initial_value: ""
+
+sensor:
+  # Add a sensor to monitor WiFi signal strength
+  - platform: wifi_signal
+    name: "WiFi Signal Strength"
+    update_interval: 60s
+    icon: "mdi:wifi"
+
+  - platform: template
+    id: net_power
+    name: "Net Power"
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: never
+
+uart:
+  - id: uart_p1
+    rx_pin:
+      number: GPIO3
+      inverted: true
+    baud_rate: 115200
+    rx_buffer_size: 3000   # iets ruimer dan 1 frame
+    # debug:
+
+interval:
+  - interval: 200ms
+    then:
+      - lambda: |-
+          // Kleine helper om een OBIS-waarde (kW) uit het buffer te halen
+          auto find_kw = [](const std::string &buf, const char *obis) -> float {
+            size_t p = buf.find(obis);
+            if (p == std::string::npos) return NAN;
+            p = buf.find('(', p);
+            if (p == std::string::npos) return NAN;
+            size_t e = buf.find('*', p + 1);
+            if (e == std::string::npos || e <= p + 1) return NAN;
+            std::string s = buf.substr(p + 1, e - (p + 1));
+            return atof(s.c_str());  // in kW
+          };
+
+          static uint32 last_frame = 0;
+          static uint32 last_log = 0;
+          uint8_t c;
+          while (id(uart_p1).available()) 
+          {
+            if (!id(uart_p1).read_byte(&c)) 
+              break;
+            id(p1_buf).push_back((char)c);
+
+            if (c == '\n')  // Einde van een regel, kan gebruikt worden voor debug
+            {
+              // ESP_LOGD("p1-reader", "Line: %s", id(p1_buf).c_str());
+            }
+            if (c == '!')   // compleet P1-telegram binnen
+            { 
+              last_frame = millis();
+              
+              // Parse import/export (kW); sommige meters missen 1 van de 2
+              float p_imp_kw = find_kw(id(p1_buf), "1-0:1.7.0");
+              float p_exp_kw = find_kw(id(p1_buf), "1-0:2.7.0");
+              if (std::isnan(p_imp_kw)) p_imp_kw = 0.0f;
+              if (std::isnan(p_exp_kw)) p_exp_kw = 0.0f;
+
+              float net_w = (p_imp_kw - p_exp_kw) * 1000.0f;
+
+              // Publiceer netto vermogen
+              id(net_power).publish_state(net_w);
+
+              id(p1_buf).clear();
+
+              static uint32 last_log = 0;
+              if (millis() - last_log > 5000) {
+                last_log = millis();
+                ESP_LOGI("p1-reader", "Net power: %.0f W (imp %.3f kW, exp %.3f kW)",
+                        net_w, p_imp_kw, p_exp_kw);
+              }
+            }
+            else if (millis() - last_frame > 5000) 
+            {
+              last_frame = millis();
+              // Te lang geleden sinds laatste frame, dus buffer resetten
+              ESP_LOGW("p1-reader", "No complete frame for 5s, flushing buffer");
+              id(p1_buf).clear();
+            }
+            // Failsafe tegen rommel/half frames
+            if (id(p1_buf).size() > 2800) 
+            {
+              ESP_LOGW("p1-reader", "Frame oversize, flushing buffer");
+              id(p1_buf).clear();
+            }
+          }
