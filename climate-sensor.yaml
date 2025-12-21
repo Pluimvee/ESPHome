@@ -1,0 +1,81 @@
+# Copyright (c) 2025 Pluimvee
+# Outside temperature sensor 
+
+# First some basic configuration
+#--------------------------------------------
+substitutions:
+  device_id: outside-climate
+  build_root: !secret build_root
+
+esphome:
+  name: ${device_id}
+  build_path: ${build_root}/${device_id}  
+  friendly_name: Outside Climate
+
+esp32:
+  board: esp32-c3-devkitm-1
+  variant: esp32c3
+  framework:
+    type: esp-idf
+
+# Enable logging
+logger:
+  level: INFO
+  baud_rate: 0
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: !secret api_key
+
+# Allow Over-The-Air updates
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  min_auth_mode: WPA2
+  # Sneller verbinden als je alleen 2.4 GHz gebruikt / SSID niet hidden is
+  fast_connect: true
+  power_save_mode: none
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Outside Climate Hotspot"
+    password: !secret wifi_ap_password
+
+captive_portal:
+
+# Enable web server for debugging and control
+web_server:
+    port: 80
+    version: 3
+
+# and now we are adding the functionality of this device
+#--------------------------------------------
+# I²C bus (AHT10)
+i2c:
+  sda: GPIO8  # D2
+  scl: GPIO9  # D1
+  frequency: 50kHz
+  scan: true
+
+sensor:
+  # Add a sensor to monitor WiFi signal strength
+  - platform: wifi_signal
+    name: "WiFi Signal Strength"
+    update_interval: 60s
+    icon: "mdi:wifi"
+
+# Reading the sensors each 10seconds
+  - platform: aht10
+    temperature:
+      name: "Air In"
+      id: air_in_temp
+      icon: "mdi:home-thermometer-outline"
+    humidity:
+      name: "Air Humidity"
+      id: air_humidity
+      icon: "mdi:water-percent"
+    update_interval: 10s

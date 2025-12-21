@@ -10,14 +10,25 @@ substitutions:
 esphome:
   name: ${device_id}
   build_path: ${build_root}/${device_id}  
-  friendly_name: Multical430 Warmtepomp
+  friendly_name: Kamstrup Warmtepomp
+  on_boot:
+    priority: 1000
+    then:
+      - delay: 2s
+      - script.execute: apply_pwm # turn on PWM with restored value
+      - delay: 8s
+      - script.execute: apply_pwm # re-apply PWM after uart init
 
-esp8266:  
-  board: esp12e   # 4MB flash
+# using an ESP32-C3
+esp32:
+  board: esp32-c3-devkitm-1
+  variant: esp32c3
+  framework:
+    type: esp-idf
 
 # Enable logging
 logger:
-  level: DEBUG
+  level: INFO
   baud_rate: 0
 
 # Enable Home Assistant API
@@ -62,52 +73,264 @@ external_components:
 #--------------------------------------------
 uart:
   - id: uart_kamstrup
-    tx_pin: GPIO01
-    rx_pin: GPIO03
+    rx_pin: GPIO20
+    tx_pin: GPIO21
     baud_rate: 1200
     data_bits: 8
     parity: NONE
     stop_bits: 2
     rx_buffer_size: 512
-    debug:
+    # debug:
 
-# Sensors die de component publiceert
+globals:
+  # Current pump speed in % (0-100)
+  - id: wilo_current_pct
+    type: int
+    restore_value: true
+    initial_value: '80'
+
+  # Target flow in auto mode
+  - id: flow_target_auto
+    type: float
+    restore_value: true
+    initial_value: '950.0'
+
+# Switch for auto control van de pomp
+switch:
+  - platform: template
+    name: "Pump auto control"
+    id: auto_pump
+    icon: mdi:auto-mode
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+
+# Sensors die dit component publiceert
 sensor:
   # Add a sensor to monitor WiFi signal strength
   - platform: wifi_signal
     name: "WiFi Signal Strength"
-    icon: "mdi:wifi"
+    icon: mdi:wifi
     update_interval: 60s
 
+  # Kamstrup Multical 430 heat pump sensors
   - platform: kamstrup
     uart_id: uart_kamstrup
     update_interval: 10s
     heat_energy:
-      name: "Heat Energy"
-      icon: "mdi:fire"
+      name: "Energy Output"
+      icon: mdi:fire
+      device_class: energy
+      state_class: total_increasing
+      accuracy_decimals: 2
     flow:
       name: "Flow"
+      id: flow_rate
       icon: "mdi:water-pump"
+      accuracy_decimals: 0
+    # power in kW, we convert to W
     power:
       name: "Power"
+      id: power_out
       icon: "mdi:flash"
-      unit_of_measurement: "W"  #convert from kW
+      unit_of_measurement: "W"
+      accuracy_decimals: 0
+      device_class: power
+      state_class: measurement
       filters:
         - multiply: 1000
     volume:
       name: "Volume"
       icon: "mdi:water"
     temp1:
-      name: "Temperature Out"
+      name: "Tout"
       icon: "mdi:thermometer"
     temp2:
-      name: "Temperature In"
+      name: "Tin"
       icon: "mdi:thermometer"
     temp_diff:
-      name: "Delta Temperature"
+      name: "DeltaT"
       icon: "mdi:thermometer-lines"
+      id: delta_t
+    # input B register is set to measure water leakage in m3
+    # we convert to kWh by multiplying with 0.1
     custom:
-      - name: "Pulse A"
-        command: 0x0054
-      - name: "Pulse B"
+      - name: "Energy Input"
         command: 0x0055
+        device_class: energy
+        state_class: total_increasing
+        unit_of_measurement: "kWh"    # convert from m3 to kWh
+        icon: "mdi:flash-outline"
+        accuracy_decimals: 2
+        filters:
+          - multiply: 0.1             # m3 to kWh conversion factor 
+
+  # Sensor to show the pump usage in % (50-100%)
+  - platform: template
+    name: "Pump usage"
+    id: wilo_speed_actual
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+    icon: "mdi:pump"
+    update_interval: 10s
+    lambda: |-
+      // min speed = 50% (PWM 60), max speed = 100% (PWM 10)
+      return 50.0f + (id(wilo_current_pct) / 100.0f * 50.0f);  
+
+output:
+  # Ruwe LEDC-PWM op GPIO6 (naar opto-LED)
+  - platform: ledc
+    id: wilo_pwm_raw
+    pin: GPIO10
+    frequency: 1000 Hz     # iPWM ≈ 1 kHz
+    channel: 0
+
+number:
+  # manual setting of the pump speed 0..100%
+  - platform: template
+    name: "Pump manual control"
+    id: flow_target_manual
+    min_value: 800
+    max_value: 1500
+    step: 50
+    optimistic: true
+    restore_value: true
+    initial_value: 1100
+    on_value:
+      then:
+        - if:
+            condition:
+              switch.is_off: auto_pump
+            then:
+              - script.execute: pump_control  
+
+interval:
+  - interval: 60s
+    then:
+      - script.execute: pump_control
+      - script.execute: apply_pwm
+
+  - interval: 10s
+    then:
+      - lambda: |-
+          ESP_LOGI("pump_status",
+                   "Pump status: power=%.0fW, flow=%.0f l/h, deltaT=%.1f°C, speed=%d%%",
+                   id(power_out).state,
+                   id(flow_rate).state,
+                   id(delta_t).state,
+                   id(wilo_current_pct));
+
+script:
+  # define a new pump percentage based on flow and power
+  - id: pump_control
+    mode: single
+    then:
+      - lambda: |-
+          // --- Current values ---
+          float pwr    = id(power_out).state;   
+          float flow   = id(flow_rate).state;
+          uint32_t now = millis();
+
+          // --- Failsafe when there are no values  ---
+          static uint32_t nan_timer = 0;
+          if (isnan(pwr) || isnan(flow)) {
+            if (nan_timer == 0) nan_timer = now;
+            if (now - nan_timer < 60000UL) 
+              return;      // first we wait one minutes
+            nan_timer = 0; // reset
+            
+            int pct = 80;    // failsafe pct
+            if (id(wilo_current_pct) != pct) id(wilo_current_pct) = pct;
+            ESP_LOGI("pump_control", "Pump failsafe mode: pct=%d%%", pct);
+            return;
+          }
+
+          // --- WP off detection ---
+          static uint32_t poweron_timer = 0;
+          if (fabsf(pwr) < 300.0f) {
+            poweron_timer = now + 60000UL * 2UL;  // (re)set grace period for after a poweron to 2 minutes
+            ESP_LOGI("pump_control", "Pump seems to be turned off (pwr=%.0fW) -> skip control", pwr);
+            return;
+          }
+
+          // --- Defrost / Cooling ---
+          static uint32_t defrost_timer = 0;
+          if (pwr < -1000.0f && poweron_timer < now) {
+            defrost_timer = now + 5UL * 60000UL ;  // (re)set grace periode for after a defrost to 5 minutes
+            int pct = 90;
+            if (id(wilo_current_pct) != pct) id(wilo_current_pct) = pct;
+            ESP_LOGI("pump_control", "Pump defrost/cooling: pwr=%fW, pct=%d%%", pwr, pct);
+            return;
+          }
+
+          // --- Hold timers active ---
+          if (poweron_timer > now) {
+            ESP_LOGI("pump_control", "Pump poweron grace period active (%.0f sec left)",
+                      (poweron_timer - now) / 1000.0f);
+            return;
+          }
+          if (defrost_timer > now) {
+            ESP_LOGI("pump_control", "Pump defrost grace period active (%.0f sec left)",
+                      (defrost_timer - now) / 1000.0f);
+            return;
+          }
+
+          // --- 1) Auto mode: power-based flow target ---
+          float flow_target = id(flow_target_auto);
+          if (id(auto_pump).state) 
+          {
+            if (flow_target < 1300.0f && pwr > 4500.0f) {
+              flow_target = 1300.0f;
+            } else if (flow_target >= 1300.0f && pwr < 4200.0f) {
+              flow_target = 1150.0f;
+            } else if (flow_target <= 950.0f && pwr > 3000.0f) {
+              flow_target = 1150.0f;
+            } else if (pwr < 2700.0f) {
+              flow_target = 950.0f;
+            }
+            if (id(flow_target_manual).state != flow_target)    // set slider in HA
+              id(flow_target_manual).publish_state(flow_target);
+            if (id(flow_target_auto) != flow_target)      // store new auto target
+              id(flow_target_auto) = flow_target;
+          } 
+
+          // --- 2) Manual mode: flow target from HA ---
+          else {
+            flow_target = id(flow_target_manual).state;
+            if (isnan(flow_target)) flow_target = 1100.0f;
+          }
+
+          // --- 3) Flow-control towards target ---
+          flow_target = clamp(flow_target, 800.0f, 1500.0f);  // safety clamp
+          float err = flow_target - flow;
+          float aerr = fabsf(err);
+          const float db = 15.0f;   // deadband +/-15 based on flow noise ~20 l/h
+          int step = 0;
+
+          // variable step size based on error
+          if (aerr <= db) step = 0;
+          else if (aerr > 300.0f) step = 10;
+          else if (aerr > 150.0f) step = 5;
+          else if (aerr >  50.0f) step = 2;
+          else step = 1;
+
+          // --- set pct value ---
+          int pct = id(wilo_current_pct);
+          if (step > 0) {
+            if (err > 0) pct += step; else pct -= step;
+            pct = clamp(pct, 0, 100);
+            id(wilo_current_pct) = pct;
+          }
+          ESP_LOGI("pump_control",
+                    "Flow ctrl (%s): target=%.0f l/h, flow=%.0f l/h, err=%.0f, step=%d, pct=%d",
+                    id(auto_pump).state ? "auto":"manual", flow_target, flow, err, step, pct);
+
+  # Apply the current percentage to the PWM output
+  - id: apply_pwm
+    mode: single
+    then:
+      - lambda: |-
+          // --- Mapping pct → Wilo PWM ---
+          float pwm_duty = 0.60f - (id(wilo_current_pct) / 100.0f * 0.50f);  // 0% → 60%, 100% → 10%
+          pwm_duty = clamp(pwm_duty, 0.10f, 0.60f);
+          id(wilo_pwm_raw).set_level(pwm_duty);
+          ESP_LOGD("pump_control", "Set pump PWM duty=%.3f", pwm_duty);
