@@ -1,0 +1,334 @@
+# Copyright (c) 2025 Pluimvee
+# Configuration Template
+
+# First some basic configuration
+#--------------------------------------------
+substitutions:
+  device_id: p1-sdm630-emu
+  build_root: !secret build_root
+
+esphome:
+  name: ${device_id}
+  build_path: ${build_root}/${device_id}  
+  friendly_name: SDM630 Emulator
+
+esp32:
+  board: esp32dev # ESP32 Dev Module, 4MB flash
+  framework:
+    type: esp-idf
+
+# Enable logging
+logger:
+  level: DEBUG
+  baud_rate: 0
+  logs:
+    uart: WARN
+    sensor: WARN
+    number: WARN
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: !secret api_key
+
+# Allow Over-The-Air updates
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+# mDNS expliciet aan laten
+mdns:
+  disabled: false
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  # Sneller verbinden als je alleen 2.4 GHz gebruikt / SSID niet hidden is
+  fast_connect: true
+  power_save_mode: none
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "P1SolisBridge Hotspot"
+    password: !secret wifi_ap_password
+
+captive_portal:
+
+# Enable web server for debugging and control
+web_server:
+    port: 80
+    version: 3
+
+# and now we are adding the functionality of this device
+#--------------------------------------------
+external_components:
+  # - source: github://Pluimvee/esphome-intergas
+  - source: C:/Users/erikv/OneDrive/Archive/Erik/Hobby/ESPHome/components/esphome-sdm630-emu/components
+    refresh: 1min
+
+uart:
+  # RS-485 SDM630 emulator
+  - id: uart_rs485
+    rx_pin: GPIO16
+    tx_pin: GPIO17
+    baud_rate: 9600       # SDM630 default
+    data_bits: 8
+    parity: NONE
+    stop_bits: 1
+    rx_buffer_size: 512
+    # debug:
+
+# De bridge-component
+sdm630_emu:
+  rs485_uart_id: uart_rs485
+  rs485_address: 1   # Pas aan indien nodig (1-247)
+
+# Sensors die de component publiceert
+sensor:
+  # Add a sensor to monitor WiFi signal strength
+  - platform: wifi_signal
+    name: "WiFi Signal Strength"
+    icon: "mdi:wifi"
+    update_interval: 60s
+
+  - platform: homeassistant
+    id: ha_voltage_l1
+    entity_id: sensor.smart_meter_p1_reader_voltage_l1
+    on_value:
+      then:
+        - number.set:
+            id: voltage_l1_input
+            value: !lambda "return x;"
+  - platform: homeassistant
+    id: ha_voltage_l2
+    entity_id: sensor.smart_meter_p1_reader_voltage_l2
+    on_value:
+      then:
+        - number.set:
+            id: voltage_l2_input
+            value: !lambda "return x;"
+  - platform: homeassistant
+    id: ha_voltage_l3
+    entity_id: sensor.smart_meter_p1_reader_voltage_l3
+    on_value:
+      then:
+        - number.set:
+            id: voltage_l3_input
+            value: !lambda "return x;"
+  - platform: homeassistant
+    id: ha_power_l1
+    entity_id: sensor.smart_meter_p1_reader_power_l1
+    on_value:
+      then:
+        - lambda: |-
+            id(raw_power_l1) = x;
+  - platform: homeassistant
+    id: ha_power_l2
+    entity_id: sensor.smart_meter_p1_reader_power_l2
+    on_value:
+      then:
+        - lambda: |-
+            id(raw_power_l2) = x;
+  - platform: homeassistant
+    id: ha_power_l3
+    entity_id: sensor.smart_meter_p1_reader_power_l3
+    on_value:
+      then:
+        - lambda: |-
+            id(raw_power_l3) = x;
+  - platform: homeassistant
+    id: ha_energy_import
+    entity_id: sensor.smart_meter_p1_reader_energy_import
+    on_value:
+      then:
+        - number.set:
+            id: energy_import_input
+            value: !lambda "return x;"
+  - platform: homeassistant
+    id: ha_energy_export
+    entity_id: sensor.smart_meter_p1_reader_energy_export
+    on_value:
+      then:
+        - number.set:
+            id: energy_export_input
+            value: !lambda "return x;"
+
+number:
+  - platform: sdm630_emu
+    voltage_l1:
+      id: voltage_l1_input
+      name: "Voltage L1"
+    voltage_l2:
+      id: voltage_l2_input
+      name: "Voltage L2"
+    voltage_l3:
+      id: voltage_l3_input
+      name: "Voltage L3"
+    power_l1:
+      id: power_l1_input
+      name: "Power L1"
+    power_l2:
+      id: power_l2_input
+      name: "Power L2"
+    power_l3:
+      id: power_l3_input
+      name: "Power L3"
+    energy_import:
+      id: energy_import_input
+      name: "Energy Import"
+    energy_export:
+      id: energy_export_input
+      name: "Energy Export"
+    power_total:
+      id: power_total_internal
+      name: "Power Total (internal)"
+      internal: true
+    apparent_power_l1:
+      id: apparent_power_l1_internal
+      name: "Apparent Power L1 (internal)"
+      internal: true
+    apparent_power_l2:
+      id: apparent_power_l2_internal
+      name: "Apparent Power L2 (internal)"
+      internal: true
+    apparent_power_l3:
+      id: apparent_power_l3_internal
+      name: "Apparent Power L3 (internal)"
+      internal: true
+    apparent_power_total:
+      id: apparent_power_total_internal
+      name: "Apparent Power Total (internal)"
+      internal: true
+    reactive_power_l1:
+      id: reactive_power_l1_internal
+      name: "Reactive Power L1 (internal)"
+      internal: true
+    reactive_power_l2:
+      id: reactive_power_l2_internal
+      name: "Reactive Power L2 (internal)"
+      internal: true
+    reactive_power_l3:
+      id: reactive_power_l3_internal
+      name: "Reactive Power L3 (internal)"
+      internal: true
+    reactive_power_total:
+      id: reactive_power_total_internal
+      name: "Reactive Power Total (internal)"
+      internal: true
+    power_factor_l1:
+      id: power_factor_l1_internal
+      name: "Power Factor L1 (internal)"
+      internal: true
+    power_factor_l2:
+      id: power_factor_l2_internal
+      name: "Power Factor L2 (internal)"
+      internal: true
+    power_factor_l3:
+      id: power_factor_l3_internal
+      name: "Power Factor L3 (internal)"
+      internal: true
+    power_factor_total:
+      id: power_factor_total_internal
+      name: "Power Factor Total (internal)"
+      internal: true
+    frequency:
+      id: frequency_internal
+      name: "Grid Frequency (internal)"
+      internal: true
+    current_l1:
+      id: current_l1_internal
+      name: "Current L1 (internal)"
+      internal: true
+    current_l2:
+      id: current_l2_internal
+      name: "Current L2 (internal)"
+      internal: true
+    current_l3:
+      id: current_l3_internal
+      name: "Current L3 (internal)"
+      internal: true
+  - platform: template
+    id: power_offset_input
+    name: "Power Offset"
+    initial_value: 0
+    min_value: -10000
+    max_value: 10000
+    step: 500
+    optimistic: true
+
+globals:
+  - id: raw_power_l1
+    type: float
+    initial_value: "NAN"
+  - id: raw_power_l2
+    type: float
+    initial_value: "NAN"
+  - id: raw_power_l3
+    type: float
+    initial_value: "NAN"
+
+interval:
+  - interval: 1s
+    then:
+      - lambda: |-
+          auto set_num = [](esphome::number::Number *num, float value) {
+            auto call = num->make_call();
+            call.set_value(value);
+            call.perform();
+          };
+
+          const float v1 = id(voltage_l1_input).state;
+          const float v2 = id(voltage_l2_input).state;
+          const float v3 = id(voltage_l3_input).state;
+          const float p1 = id(raw_power_l1);
+          const float p2 = id(raw_power_l2);
+          const float p3 = id(raw_power_l3);
+
+          const float offset_total = id(power_offset_input).state;
+          const float offset_each = isnan(offset_total) ? 0.0f : (offset_total / 3.0f);
+
+          const float p1_adj = isnan(p1) ? p1 : (p1 - offset_each);
+          const float p2_adj = isnan(p2) ? p2 : (p2 - offset_each);
+          const float p3_adj = isnan(p3) ? p3 : (p3 - offset_each);
+
+          set_num(id(power_l1_input), p1_adj);
+          set_num(id(power_l2_input), p2_adj);
+          set_num(id(power_l3_input), p3_adj);
+          float total_power = 0.0f;
+          bool have_power = false;
+          if (!isnan(p1_adj)) { total_power += p1_adj; have_power = true; }
+          if (!isnan(p2_adj)) { total_power += p2_adj; have_power = true; }
+          if (!isnan(p3_adj)) { total_power += p3_adj; have_power = true; }
+
+          set_num(id(power_total_internal), have_power ? total_power : 0.0f);
+
+          const float s1 = isnan(p1_adj) ? 0.0f : fabsf(p1_adj);  // Apparent power per phase = absolute value of active power (assuming unity power factor)
+          const float s2 = isnan(p2_adj) ? 0.0f : fabsf(p2_adj);
+          const float s3 = isnan(p3_adj) ? 0.0f : fabsf(p3_adj);
+          const float s_total = s1 + s2 + s3;
+
+          set_num(id(apparent_power_l1_internal), s1);
+          set_num(id(apparent_power_l2_internal), s2);
+          set_num(id(apparent_power_l3_internal), s3);
+          set_num(id(apparent_power_total_internal), s_total);
+
+          set_num(id(reactive_power_l1_internal), 0.0f);  // Reactive power set to 0.0f as we assume unity power factor
+          set_num(id(reactive_power_l2_internal), 0.0f);
+          set_num(id(reactive_power_l3_internal), 0.0f);
+          set_num(id(reactive_power_total_internal), 0.0f);
+
+          set_num(id(power_factor_l1_internal), s1 > 0.0f ? (p1_adj / s1) : 0.0f);  // Power factor = active power / apparent power, will be 1.0f
+          set_num(id(power_factor_l2_internal), s2 > 0.0f ? (p2_adj / s2) : 0.0f);
+          set_num(id(power_factor_l3_internal), s3 > 0.0f ? (p3_adj / s3) : 0.0f);
+          set_num(id(power_factor_total_internal), s_total > 0.0f ? (total_power / s_total) : 0.0f);
+
+          set_num(id(frequency_internal), 50.0f);
+
+          set_num(id(current_l1_internal), (!isnan(v1) && v1 > 0.0f) ? fabsf(p1_adj / v1) : 0.0f);
+          set_num(id(current_l2_internal), (!isnan(v2) && v2 > 0.0f) ? fabsf(p2_adj / v2) : 0.0f);
+          set_num(id(current_l3_internal), (!isnan(v3) && v3 > 0.0f) ? fabsf(p3_adj / v3) : 0.0f);
+
+binary_sensor:
+  - platform: sdm630_emu
+    modbus_active:
+      name: "Modbus Active"
