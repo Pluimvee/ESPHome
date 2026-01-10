@@ -1,19 +1,21 @@
 # Copyright (c) 2025 Pluimvee
-# Configuration Template
+# Energy meter used for the Dishwasher
+# SONOFF MODULE - RELAIS SHORTED TO ACT ONLY AS ENERGY METER
 
 # First some basic configuration
 #--------------------------------------------
 substitutions:
-  device_id: power-plug-w1
+  device_id: "energy-dishwasher"
   build_root: !secret build_root
 
 esphome:
   name: ${device_id}
-  build_path: ${build_root}/${device_id}  
-  friendly_name: Power Plug White 1
+  build_path: ${build_root}/${device_id}
+  friendly_name: Energy Meter Dishwasher
   on_boot:
     priority: -100  # Zorgt dat dit als laatste gebeurt (na WiFi, tijd, etc.)
     then:
+      - delay: 1s
       - lambda: |-
           id(energy_total) = id(energy_total_persisted);  // Restore from persistent storage
 
@@ -68,7 +70,7 @@ globals:
   - id: energy_total
     type: float
     restore_value: no
-    initial_value: '0.0'
+    initial_value: 'NAN'
   - id: energy_today
     type: float
     restore_value: no
@@ -79,7 +81,10 @@ interval:
   - interval: 60s
     then:
       - lambda: |-
-          if (fabs(id(energy_total_persisted) - id(energy_total)) > 0.1) {
+          if (isnan(id(energy_total)))
+            id(energy_total) = id(energy_total_persisted);
+
+          if ((id(energy_total) - id(energy_total_persisted)) > 0.1) {  // only persist if more than 0.1kWh increase
             id(energy_total_persisted) = id(energy_total);
             ESP_LOGI("Persist", "Total energy usage %.2f persisted", id(energy_total_persisted));
           }
@@ -111,6 +116,9 @@ sensor:
     update_interval: 60s
 
   # BL0937 power and voltage sensor
+  # althought the sensor measures current next to power and voltage, the P=V*I doesnt add up well enough to use it reliably
+  # this may be caused by reading the current in intervals with voltage
+  # therefore we calibrate voltage first, and then the power instead of current using the current_resistor
   - platform: hlw8012
     model: "BL0937"
     sel_pin:
@@ -118,15 +126,19 @@ sensor:
       inverted: true
     cf_pin: GPIO4
     cf1_pin: GPIO5
-    current_resistor: 0.0011
-    voltage_divider: 1521
+    current_resistor: 0.001
+    voltage_divider: 1534.6
     update_interval: 3s
-    change_mode_every: 4
+    # When both current and voltage sensors are defined we 
+    # need to switch CF1 using SEL pin every x measurements
+    initial_mode: VOLTAGE
+    change_mode_every: "never"
 
-    current:
-      name: "Current"
-      filters:
-        - multiply: 0.88
+    # disable the current sensor to benefit more frequent voltage updates
+    # current:
+    #   name: "Current"
+    #   filters:
+    #     - multiply: 0.8605
     voltage:
       name: "Voltage"
     power:
@@ -141,11 +153,14 @@ sensor:
                 float current = id(energy).state;
                 float delta = current - last;
                 if (delta > 0 && delta < 100) {  // sanity check 100Wh in 3s = 120kWh
+                  if (isnan(id(energy_total)))
+                    id(energy_total) = id(energy_total_persisted);
+                 
                   id(energy_total) += delta/1000.0; // to kWh
                   id(energy_today) += delta/1000.0; // to kWh
                 }
                 last = current;
-  
+
   # the total and today energy sensors
   - platform: template
     id: sensor_total
@@ -162,21 +177,25 @@ sensor:
     lambda: |-
       return id(energy_today);
 
-# relais      
+# relais
 switch:
   - platform: gpio
     pin: GPIO14
     name: "Switch"
     id: relais
+    on_turn_on:
+      - output.turn_on: led_out
+    on_turn_off:
+      - output.turn_off: led_out
 
 binary_sensor:
   - platform: status
     name: "Status"
 
-  #power button
+  # power button (RX)
   - platform: gpio
     pin:
-      number: GPIO13
+      number: GPIO3
       mode: INPUT_PULLUP
       inverted: true
     name: "Power"
@@ -196,3 +215,8 @@ binary_sensor:
               id(energy_today) = 0.0;
               ESP_LOGI("reset", "Total energy reset to 0.0kWh !");
 
+output:
+  - platform: gpio
+    id: led_out
+    pin: GPIO13
+    inverted: true

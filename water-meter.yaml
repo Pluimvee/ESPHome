@@ -95,12 +95,14 @@ script:
     then:
       - delay: 10s
       - lambda: |-
-          // Save the current water_used_total to persistent storage
+          // Reset the water flow
           id(water_flow) = 0.0;  
       - delay: 20s
       - lambda: |-
           // Save the current water_used_total to persistent storage
-          id(water_used_total_persisted) = id(water_used_total);
+          // but only when value has increased !!
+          if (id(water_used_total) > id(water_used_total_persisted))
+            id(water_used_total_persisted) = id(water_used_total);
           ESP_LOGI("delayed_save", "The total water used (%0.4f) persisted!", id(water_used_total_persisted));
 
 sensor:
