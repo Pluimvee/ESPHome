@@ -1,26 +1,27 @@
-# Copyright (c) 2025 Pluimvee
-# Energy Meter used for the Dryer
-# TUYA MODULE - RELAIS SHORTED TO ACT ONLY AS ENERGY METER
+# Copyright (c) 2026 Pluimvee
+# Energy meter used for the EV Charger
+# EARU DIN MODULE
 
 # First some basic configuration
 #--------------------------------------------
 substitutions:
-  device_id: "energy-dryer"
+  device_id: "switch-evcharger"
   build_root: !secret build_root
 
 esphome:
   name: ${device_id}
-  build_path: ${build_root}/${device_id}  
-  friendly_name: Energy Meter Dryer
-  on_boot:
-    priority: -100  # Zorgt dat dit als laatste gebeurt (na WiFi, tijd, etc.)
-    then:
-      - delay: 1s
-      - lambda: |-
-          id(energy_total) = id(energy_total_persisted);  // Restore from persistent storage
+  build_path: ${build_root}/${device_id}
+  friendly_name: EV Charger Mains
+  project:
+    name: 'EcoGrid.DIN Latching Switch & Energy AT/TUYA mod'
+    version: Jan 25 2026
 
 esp8266:
   board: esp8285
+  restore_from_flash: true
+
+preferences:
+  flash_write_interval: 15min
 
 # Enable logging
 logger:
@@ -43,7 +44,7 @@ wifi:
 
 # Enable fallback hotspot (captive portal) in case wifi connection fails
   ap:
-    ssid: "PowerPlug Hotspot"
+    ssid: "DIN TUYA Hotspot"
     password: !secret wifi_ap_password
 
 captive_portal:
@@ -53,47 +54,32 @@ web_server:
     port: 80
     version: 3
 
+# -- Time Setup --
+time:
+  - platform: homeassistant
+    id: time_id
+
 # and now we are adding the functionality of this device
 #--------------------------------------------
-# -- SNTP Time Setup --
-time:
-  - platform: sntp
-    id: sntp_time
-    timezone: Europe/Amsterdam  # CET/CEST (handles DST automatically)
 
 # -- some globals for energy today, and total. --
 globals:
-  - id: energy_total_persisted  # anti-flash-wearing
-    type: float
-    restore_value: yes
-    initial_value: '0.0'
   - id: energy_total
     type: float
-    restore_value: no
-    initial_value: 'NAN'
+    restore_value: true
+    initial_value: '0.0'
   - id: energy_today
     type: float
     restore_value: no
     initial_value: '0.0'
 
-# -- anti flash-wearing logic to persist the total energy used --
 interval:
-  - interval: 60s
-    then:
-      - lambda: |-
-          if (isnan(id(energy_total)))
-            id(energy_total) = id(energy_total_persisted);
-
-          if ((id(energy_total) - id(energy_total_persisted)) > 0.1) {  // only persist if more than 0.1kWh increase
-            id(energy_total_persisted) = id(energy_total);
-            ESP_LOGI("Persist", "Total energy usage %.2f persisted", id(energy_total_persisted));
-          }
   # -- Midnight reset for "Energy Used Today" --
   - interval: 60s
     then:
       - lambda: |-
           static int last_day = -1;
-          auto time = id(sntp_time).now();
+          auto time = id(time_id).now();
           if (time.is_valid()) {
             // initialize last_day after boot
             if (last_day == -1) {
@@ -106,6 +92,22 @@ interval:
               id(sensor_today).publish_state(id(energy_today));
             }
           }
+  - interval: 1s
+    then:
+      - if:
+          condition:
+            binary_sensor.is_on: ha_status
+          then:
+            switch.turn_on: led_blue
+          else:
+            switch.turn_off: led_blue
+
+uart:
+  rx_pin: GPIO3
+  tx_pin: GPIO1
+  baud_rate: 4800
+  id: BL0942_UART
+  # debug:
 
 # -- the sensors --
 sensor:
@@ -115,57 +117,74 @@ sensor:
     icon: "mdi:wifi"
     update_interval: 60s
 
-  # BL0937 power and voltage sensor
-  # althought the sensor measures current next to power and voltage, the P=V*I doesnt add up well enough to use it reliably
-  # this may be caused by reading the current in intervals with voltage
-  # therefore we calibrate voltage first, and then the power instead of current using the current_resistor
-  - platform: hlw8012
-    model: "BL0937"
-    sel_pin:
-      number: GPIO12
-      inverted: true
-    cf_pin: GPIO4
-    cf1_pin: GPIO5
-    current_resistor: 0.00106  # increase to get lower P readings
-    voltage_divider: 1560.1     # increase to get higher V readings
-    update_interval: 3s
-    # When both current and voltage sensors are defined we 
-    # need to switch CF1 using SEL pin every x measurements
-    initial_mode: VOLTAGE
-    change_mode_every: "never"
+  - platform: adc
+    id: temp_adc
+    pin: A0
+    update_interval: 30s
 
-    # disable the current sensor to benefit more frequent voltage updates
-    # current:
-    #   name: "Current"
-    #   filters:
-    #     - multiply: 0.8857 # adjust the Amps to match with  voltage and power readings
+  - platform: resistance
+    id: temp_resistance
+    sensor: temp_adc
+    configuration: DOWNSTREAM
+    resistor: 200kOhm
+
+  - platform: ntc
+    name: "Temperature"
+    sensor: temp_resistance
+    unit_of_measurement: "C"
+    device_class: temperature
+    filters:
+      - offset: -8.0
+    calibration:
+      b_constant: 3950
+      reference_resistance: 124kOhm
+      reference_temperature: 18C
+
+  # BL0942 power and voltage sensor
+  - platform: bl0942
+    uart_id: BL0942_UART
+    update_interval: 5s
+    voltage_reference: 15655.3562       # default 15873.35944299
+    current_reference: 124788.44744682  # default 251213.46469622, calibrated from 3.05A reported vs 6.14A measured
+    power_reference: 303.9856528        # default 596.0 calibrated from 711W reported vs 1394W measured
+    energy_reference: 2606.0577         # default 3304.61127328 scaled by same factor as power_reference
     voltage:
       name: "Voltage"
+      accuracy_decimals: 1
+    current:
+      name: "Current"
+      accuracy_decimals: 2
     power:
       name: "Power"
+      accuracy_decimals: 0
+      filters:
+        - multiply: -1
+    frequency:
+      name: "Frequency"
+      accuracy_decimals: 2
     energy:
-      name: "Energy"
-      id: energy
+      id: energy_since_boot
+      internal: true
       on_value:
           then:
             - lambda: |-
                 static float last = 0.0;
-                float current = id(energy).state;
+                float current = id(energy_since_boot).state;
                 float delta = current - last;
                 if (delta > 0 && delta < 100) {  // sanity check 100Wh in 3s = 120kWh
-                  if (isnan(id(energy_total)))
-                    id(energy_total) = id(energy_total_persisted);
                   id(energy_total) += delta/1000.0; // to kWh
                   id(energy_today) += delta/1000.0; // to kWh
                 }
                 last = current;
-  
+
   # the total and today energy sensors
   - platform: template
     id: sensor_total
-    name: "Energy Total"
+    name: "Energy"
     unit_of_measurement: "kWh"
     accuracy_decimals: 2
+    device_class: energy
+    state_class: total_increasing
     lambda: |-
       return id(energy_total);
   - platform: template
@@ -173,27 +192,52 @@ sensor:
     id: sensor_today
     unit_of_measurement: "kWh"
     accuracy_decimals: 2
+    device_class: energy
+    state_class: total_increasing
     lambda: |-
       return id(energy_today);
 
-# relais      
+# relais
 switch:
-  - platform: gpio
-    pin: GPIO14
+  - platform: template
     name: "Switch"
     id: relais
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON  # Restore the state after reboot
+    turn_on_action:
+      - output.turn_on: relay_set
+      - delay: 80ms
+      - output.turn_off: relay_set
+      - switch.turn_on: led_red
+    turn_off_action:
+      - output.turn_on: relay_reset
+      - delay: 80ms
+      - output.turn_off: relay_reset
+      - switch.turn_off: led_red
+
+  - platform: gpio
+    id: led_red
+    pin: GPIO4
+    # inverted: true
+    internal: true
+
+  - platform: gpio
+    id: led_blue
+    pin: GPIO5
+    # inverted: true
+    internal: true
 
 binary_sensor:
   - platform: status
     name: "Status"
+    id: ha_status
 
-  #power button
+  # power button
   - platform: gpio
     pin:
       number: GPIO13
       mode: INPUT_PULLUP
       inverted: true
-    name: "Power"
     id: power_btn
     internal: true
     on_multi_click:
@@ -210,3 +254,10 @@ binary_sensor:
               id(energy_today) = 0.0;
               ESP_LOGI("reset", "Total energy reset to 0.0kWh !");
 
+output:
+  - platform: gpio
+    id: relay_set
+    pin: GPIO12
+  - platform: gpio
+    id: relay_reset
+    pin: GPIO14

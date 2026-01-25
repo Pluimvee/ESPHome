@@ -11,9 +11,13 @@ esphome:
   name: ${device_id}
   build_path: ${build_root}/${device_id}  
   friendly_name: Resideo Woonkamer
+  project:
+    name: 'EcoGrid.Climate Monitor (Resideo mod)'
+    version: Jan 12 2026
 
 esp8266:
   board: esp01_1m
+  restore_from_flash: false
 
 # Enable Home Assistant API
 api:
@@ -66,13 +70,15 @@ sensor:
     temperature:
       name: "Temperature"
       filters:
-        - calibrate_linear:
-          - 0.00 -> 0.00
-          - 28.0 -> 22.0
+        - offset: -5.0
+        - lambda: |-
+            if (x < 0.0f || x > 40.0f) return NAN;
+            return x;
+        - filter_out: nan
     humidity:
       name: "Humidity"
       filters:
-        - offset: 0.1  # Adjust humidity offset if needed
+        - offset: -3.5  # Adjust humidity offset if needed
 
   - platform: cm1106_sniffer
     name: "Carbon-dioxide"

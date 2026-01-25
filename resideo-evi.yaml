@@ -4,13 +4,13 @@
 # First some basic configuration
 #--------------------------------------------
 substitutions:
-  device_id: resideo-slaapkamer
+  device_id: resideo-evi
   build_root: !secret build_root
 
 esphome:
   name: ${device_id}
   build_path: ${build_root}/${device_id}  
-  friendly_name: Resideo Slaapkamer
+  friendly_name: Resideo Slaapkamer Evi
   project:
     name: 'EcoGrid.Climate Monitor (Resideo mod)'
     version: Jan 12 2026
@@ -35,7 +35,7 @@ wifi:
   min_auth_mode: WPA2
 # Enable fallback hotspot (captive portal) in case wifi connection fails
   ap:
-    ssid: "Resideo"
+    ssid: "Resideo Evi"
     password: !secret wifi_ap_password
 
 captive_portal:
@@ -70,7 +70,7 @@ sensor:
     temperature:
       name: "Temperature"
       filters:
-        - offset: -5.2
+        - offset: -5.1
         - lambda: |-
             if (x < 0.0f || x > 40.0f) return NAN;
             return x;
@@ -78,7 +78,7 @@ sensor:
     humidity:
       name: "Humidity"
       filters:
-        - offset: 6.8  # Adjust humidity offset if needed
+        - offset: 0.0  # Adjust humidity offset if needed
 
   - platform: cm1106_sniffer
     name: "Carbon-dioxide"

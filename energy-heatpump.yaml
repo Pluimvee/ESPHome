@@ -1,20 +1,22 @@
-# Copyright (c) 2025 Pluimvee
-# Energy meter used for the Dishwasher
-# SONOFF MODULE - RELAIS SHORTED TO ACT ONLY AS ENERGY METER
+# Copyright (c) 2026 Pluimvee
+# Energy meter used for the EV Charger
+# EARU DIN MODULE
 
 # First some basic configuration
 #--------------------------------------------
 substitutions:
-  device_id: "energy-dishwasher"
+  device_id: "energy-heatpump"
   build_root: !secret build_root
+  update_power: 3s
+  update_interval: 10s
 
 esphome:
   name: ${device_id}
   build_path: ${build_root}/${device_id}
-  friendly_name: Energy Meter Dishwasher
+  friendly_name: Energy Meter Heatpump
   project:
-    name: 'EcoGrid.Energy meter SONOFF mod (always on)'
-    version: Jan 11 2026
+    name: 'EcoGrid.Energy meter EARU mod (DIN module)'
+    version: Jan 19 2026
 
 esp8266:
   board: esp8285
@@ -44,7 +46,7 @@ wifi:
 
 # Enable fallback hotspot (captive portal) in case wifi connection fails
   ap:
-    ssid: "PowerPlug Hotspot"
+    ssid: "DIN EARU Hotspot"
     password: !secret wifi_ap_password
 
 captive_portal:
@@ -93,6 +95,12 @@ interval:
             }
           }
 
+uart:
+  rx_pin: GPIO3
+  baud_rate: 4800
+  parity: EVEN
+  id: CSE7759B_UART
+
 # -- the sensors --
 sensor:
   # Add a sensor to monitor WiFi signal strength
@@ -101,39 +109,44 @@ sensor:
     icon: "mdi:wifi"
     update_interval: 60s
 
-  # BL0937 power and voltage sensor
-  - platform: hlw8012
-    model: "BL0937"
-    sel_pin:
-      number: GPIO12
-      inverted: true
-    cf_pin: GPIO4
-    cf1_pin: GPIO5
-    current_resistor: 0.001
-    voltage_divider: 1534.6
-    update_interval: 3s
-    # When both current and voltage sensors are defined we 
-    # need to switch CF1 using SEL pin every x measurements
-    initial_mode: VOLTAGE
-    change_mode_every: 4 #"never"
-
-    current:
-      name: "Current"
-      id: i_rms
-      accuracy_decimals: 2
-      filters:
-        - multiply: 0.8605
+  # CSE7759B power and voltage sensor
+  - platform: cse7766
+    uart_id: CSE7759B_UART
     voltage:
       name: "Voltage"
-      id: v_rms
       accuracy_decimals: 1
+      filters:
+        - throttle_average: ${update_interval}
+    current:
+      name: "Current"
+      accuracy_decimals: 2
+      filters:
+        - throttle_average: ${update_interval}
     power:
       name: "Power"
-      id: p_w
       accuracy_decimals: 0
+      filters:
+        - throttle_average: ${update_power}
+    apparent_power:
+      name: "Apparent Power"
+      accuracy_decimals: 0
+      filters:
+        - throttle_average: ${update_power}
+    reactive_power:
+      name: "Reactive Power"
+      accuracy_decimals: 0
+      filters:
+        - throttle_average: ${update_power}
+    power_factor:
+      name: "Power Factor"
+      accuracy_decimals: 2
+      filters:
+        - throttle_average: ${update_interval}
     energy:
       id: energy_since_boot
       internal: true
+      filters:
+        - throttle: 60s
       on_value:
           then:
             - lambda: |-
@@ -166,53 +179,13 @@ sensor:
     lambda: |-
       return id(energy_today);
 
-  # S, Q and PF
-  - platform: template
-    name: "Apparent Power"
-    id: s_va
-    unit_of_measurement: "VA"
-    device_class: apparent_power
-    accuracy_decimals: 0
-    update_interval: 3s
-    lambda: |-
-      float v = id(v_rms).state;
-      float i = id(i_rms).state;
-      if (!isfinite(v) || !isfinite(i) || v <= 0 || i < 0) return NAN;
-      return v * i;
-  - platform: template
-    name: "Power Factor"
-    unit_of_measurement: ""
-    device_class: power_factor
-    accuracy_decimals: 2
-    update_interval: 3s
-    lambda: |-
-      float p = id(p_w).state;
-      float s = id(s_va).state;
-      if (!isfinite(p) || !isfinite(s) || s <= 5.0f) return NAN; // guard tegen ruis
-      float pf = p / s;
-      if (pf < 0) pf = 0;
-      if (pf > 1) pf = 1;
-      return pf;
-  - platform: template
-    name: "Reactive Power"
-    unit_of_measurement: "var"
-    device_class: reactive_power
-    accuracy_decimals: 0
-    update_interval: 3s
-    lambda: |-
-      float p = id(p_w).state;
-      float s = id(s_va).state;
-      if (!isfinite(p) || !isfinite(s) || s <= 5.0f) return NAN;
-      float q2 = (s*s) - (p*p);
-      if (q2 < 0) q2 = 0;
-      return sqrtf(q2);
-      
 # relais
 switch:
   - platform: gpio
-    pin: GPIO14
+    pin: GPIO12
     name: "Switch"
     id: relais
+    restore_mode: RESTORE_DEFAULT_ON  # Restore the state after reboot
     on_turn_on:
       - output.turn_on: led_out
     on_turn_off:
@@ -225,7 +198,7 @@ binary_sensor:
   # power button (RX)
   - platform: gpio
     pin:
-      number: GPIO3
+      number: GPIO0
       mode: INPUT_PULLUP
       inverted: true
     name: "Power"

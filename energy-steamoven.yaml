@@ -1,19 +1,19 @@
 # Copyright (c) 2025 Pluimvee
-# Energy meter used for the Dishwasher
-# SONOFF MODULE - RELAIS SHORTED TO ACT ONLY AS ENERGY METER
+# Energy Meter used for the Steamoven
+# TUYA MODULE - RELAIS SHORTED TO ACT ONLY AS ENERGY METER
 
 # First some basic configuration
 #--------------------------------------------
 substitutions:
-  device_id: "energy-dishwasher"
+  device_id: "energy-steamoven"
   build_root: !secret build_root
 
 esphome:
   name: ${device_id}
-  build_path: ${build_root}/${device_id}
-  friendly_name: Energy Meter Dishwasher
+  build_path: ${build_root}/${device_id}  
+  friendly_name: Energy Meter Steamoven
   project:
-    name: 'EcoGrid.Energy meter SONOFF mod (always on)'
+    name: 'EcoGrid.Energy meter TUYA mod (always on)'
     version: Jan 11 2026
 
 esp8266:
@@ -54,13 +54,12 @@ web_server:
     port: 80
     version: 3
 
+# and now we are adding the functionality of this device
+#--------------------------------------------
 # -- Time Setup --
 time:
   - platform: homeassistant
     id: time_id
-
-# and now we are adding the functionality of this device
-#--------------------------------------------
 
 # -- some globals for energy today, and total. --
 globals:
@@ -109,20 +108,20 @@ sensor:
       inverted: true
     cf_pin: GPIO4
     cf1_pin: GPIO5
-    current_resistor: 0.001
-    voltage_divider: 1534.6
+    current_resistor: 0.00106  # increase to get lower P readings
+    voltage_divider: 1560.1     # increase to get higher V readings
     update_interval: 3s
     # When both current and voltage sensors are defined we 
     # need to switch CF1 using SEL pin every x measurements
     initial_mode: VOLTAGE
-    change_mode_every: 4 #"never"
+    change_mode_every: 4  # "never" change mode if only voltage or current is used
 
     current:
       name: "Current"
       id: i_rms
       accuracy_decimals: 2
       filters:
-        - multiply: 0.8605
+        - multiply: 0.8857 
     voltage:
       name: "Voltage"
       id: v_rms
@@ -145,7 +144,7 @@ sensor:
                   id(energy_today) += delta/1000.0; // to kWh
                 }
                 last = current;
-
+  
   # the total and today energy sensors
   - platform: template
     id: sensor_total
@@ -206,26 +205,22 @@ sensor:
       float q2 = (s*s) - (p*p);
       if (q2 < 0) q2 = 0;
       return sqrtf(q2);
-      
-# relais
+
+# relais      
 switch:
   - platform: gpio
     pin: GPIO14
     name: "Switch"
     id: relais
-    on_turn_on:
-      - output.turn_on: led_out
-    on_turn_off:
-      - output.turn_off: led_out
 
 binary_sensor:
   - platform: status
     name: "Status"
 
-  # power button (RX)
+  #power button
   - platform: gpio
     pin:
-      number: GPIO3
+      number: GPIO13
       mode: INPUT_PULLUP
       inverted: true
     name: "Power"
@@ -245,8 +240,3 @@ binary_sensor:
               id(energy_today) = 0.0;
               ESP_LOGI("reset", "Total energy reset to 0.0kWh !");
 
-output:
-  - platform: gpio
-    id: led_out
-    pin: GPIO13
-    inverted: true

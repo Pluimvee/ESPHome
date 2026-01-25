@@ -10,10 +10,17 @@ substitutions:
 esphome:
   name: ${device_id}
   build_path: ${build_root}/${device_id}  
-  friendly_name: EcoGrid Connect
+  friendly_name: P1 Reader
+  project:
+    name: 'EcoGrid.Connect - DSMR/P1 Reader'
+    version: Jan 11 2026
 
 esp8266:
   board: esp12e
+  restore_from_flash: false
+
+preferences:
+  flash_write_interval: never 
 
 # Enable logging
 logger:
@@ -219,6 +226,37 @@ p1_dsmr:
       filters:
         - delta: 0.1
 
+    # published current sensors per phase
+    - id: current_l1
+      obis: "1-0:31.7.0"
+      name: "Current L1"
+      icon: "mdi:current-ac"
+      unit_of_measurement: "A"
+      device_class: current
+      state_class: measurement
+      accuracy_decimals: 2
+      filters:
+        - delta: 0.01
+    - id: current_l2
+      obis: "1-0:51.7.0"
+      name: "Current L2"
+      icon: "mdi:current-ac"
+      unit_of_measurement: "A"
+      device_class: current
+      state_class: measurement
+      accuracy_decimals: 2
+      filters:
+        - delta: 0.01
+    - id: current_l3
+      obis: "1-0:71.7.0"
+      name: "Current L3"
+      icon: "mdi:current-ac"
+      unit_of_measurement: "A"
+      device_class: current
+      state_class: measurement
+      accuracy_decimals: 2
+      filters:
+        - delta: 0.01
 
 sensor:
   # Add a sensor to monitor WiFi signal strength
@@ -327,58 +365,6 @@ sensor:
       }
       return cnt > 0 ? sum / cnt : NAN;
 
-  # the current for each phase
-  - id: current_l1
-    platform: template
-    name: "Current L1"
-    icon: "mdi:current-ac"
-    unit_of_measurement: "A"
-    device_class: current
-    state_class: measurement
-    accuracy_decimals: 2
-    update_interval: 1s
-    filters:
-      - delta: 0.01
-    lambda: |-
-      float v = id(voltage_l1).state;
-      float p = id(power_l1).state;
-      if (isnan(v) || isnan(p) || fabsf(v) < 1.0f) return NAN;
-      return p / v;
-
-  - id: current_l2
-    platform: template
-    name: "Current L2"
-    icon: "mdi:current-ac"
-    unit_of_measurement: "A"
-    device_class: current
-    state_class: measurement
-    accuracy_decimals: 2
-    update_interval: 1s
-    filters:
-      - delta: 0.01
-    lambda: |-
-      float v = id(voltage_l2).state;
-      float p = id(power_l2).state;
-      if (isnan(v) || isnan(p) || fabsf(v) < 1.0f) return NAN;
-      return p / v;
-
-  - id: current_l3
-    platform: template
-    name: "Current L3"
-    icon: "mdi:current-ac"
-    unit_of_measurement: "A"
-    device_class: current
-    state_class: measurement
-    accuracy_decimals: 2
-    update_interval: 1s
-    filters:
-      - delta: 0.01
-    lambda: |-
-      float v = id(voltage_l3).state;
-      float p = id(power_l3).state;
-      if (isnan(v) || isnan(p) || fabsf(v) < 1.0f) return NAN;
-      return p / v;
-
   # the total current
   - id: current_total
     platform: template
@@ -402,6 +388,181 @@ sensor:
         if (!isnan(currents[i])) { total += currents[i]; has = true; }
       }
       return has ? total : NAN;
+
+  # S, Q and PF per phase
+  - id: s_l1
+    platform: template
+    name: "Apparent Power L1"
+    unit_of_measurement: "VA"
+    device_class: apparent_power
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: |-
+      float v = id(voltage_l1).state;
+      float i = id(current_l1).state;
+      if (!isfinite(v) || !isfinite(i) || v <= 0 || i < 0) return NAN;
+      return v * i;
+
+  - platform: template
+    name: "Power Factor L1"
+    unit_of_measurement: ""
+    device_class: power_factor
+    accuracy_decimals: 2
+    update_interval: 1s
+    lambda: |-
+      float p = id(power_l1).state;
+      float s = id(s_l1).state;
+      if (!isfinite(p) || !isfinite(s) || s <= 5.0f) return NAN;
+      float pf = p / s;
+      if (pf < -1) pf = -1;
+      if (pf > 1) pf = 1;
+      return pf;
+
+  - platform: template
+    name: "Reactive Power L1"
+    unit_of_measurement: "var"
+    device_class: reactive_power
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: |-
+      float p = id(power_l1).state;
+      float s = id(s_l1).state;
+      if (!isfinite(p) || !isfinite(s) || s <= 5.0f) return NAN;
+      float q2 = (s * s) - (p * p);
+      if (q2 < 0) q2 = 0;
+      return sqrtf(q2);
+
+  - id: s_l2
+    platform: template
+    name: "Apparent Power L2"
+    unit_of_measurement: "VA"
+    device_class: apparent_power
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: |-
+      float v = id(voltage_l2).state;
+      float i = id(current_l2).state;
+      if (!isfinite(v) || !isfinite(i) || v <= 0 || i < 0) return NAN;
+      return v * i;
+
+  - platform: template
+    name: "Power Factor L2"
+    unit_of_measurement: ""
+    device_class: power_factor
+    accuracy_decimals: 2
+    update_interval: 1s
+    lambda: |-
+      float p = id(power_l2).state;
+      float s = id(s_l2).state;
+      if (!isfinite(p) || !isfinite(s) || s <= 5.0f) return NAN;
+      float pf = p / s;
+      if (pf < -1) pf = -1;
+      if (pf > 1) pf = 1;
+      return pf;
+
+  - platform: template
+    name: "Reactive Power L2"
+    unit_of_measurement: "var"
+    device_class: reactive_power
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: |-
+      float p = id(power_l2).state;
+      float s = id(s_l2).state;
+      if (!isfinite(p) || !isfinite(s) || s <= 5.0f) return NAN;
+      float q2 = (s * s) - (p * p);
+      if (q2 < 0) q2 = 0;
+      return sqrtf(q2);
+
+  - id: s_l3
+    platform: template
+    name: "Apparent Power L3"
+    unit_of_measurement: "VA"
+    device_class: apparent_power
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: |-
+      float v = id(voltage_l3).state;
+      float i = id(current_l3).state;
+      if (!isfinite(v) || !isfinite(i) || v <= 0 || i < 0) return NAN;
+      return v * i;
+
+  - platform: template
+    name: "Power Factor L3"
+    unit_of_measurement: ""
+    device_class: power_factor
+    accuracy_decimals: 2
+    update_interval: 1s
+    lambda: |-
+      float p = id(power_l3).state;
+      float s = id(s_l3).state;
+      if (!isfinite(p) || !isfinite(s) || s <= 5.0f) return NAN;
+      float pf = p / s;
+      if (pf < -1) pf = -1;
+      if (pf > 1) pf = 1;
+      return pf;
+
+  - platform: template
+    name: "Reactive Power L3"
+    unit_of_measurement: "var"
+    device_class: reactive_power
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: |-
+      float p = id(power_l3).state;
+      float s = id(s_l3).state;
+      if (!isfinite(p) || !isfinite(s) || s <= 5.0f) return NAN;
+      float q2 = (s * s) - (p * p);
+      if (q2 < 0) q2 = 0;
+      return sqrtf(q2);
+
+  # total S, Q and PF
+  - id: s_total
+    platform: template
+    name: "Apparent Power"
+    unit_of_measurement: "VA"
+    device_class: apparent_power
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: |-
+      float s1 = id(s_l1).state;
+      float s2 = id(s_l2).state;
+      float s3 = id(s_l3).state;
+      float total = 0.0f;
+      bool has = false;
+      if (isfinite(s1)) { total += s1; has = true; }
+      if (isfinite(s2)) { total += s2; has = true; }
+      if (isfinite(s3)) { total += s3; has = true; }
+      return has ? total : NAN;
+
+  - platform: template
+    name: "Power Factor"
+    unit_of_measurement: ""
+    device_class: power_factor
+    accuracy_decimals: 2
+    update_interval: 1s
+    lambda: |-
+      float p = id(net_power).state;
+      float s = id(s_total).state;
+      if (!isfinite(p) || !isfinite(s) || s <= 5.0f) return NAN;
+      float pf = p / s;
+      if (pf < -1) pf = -1;
+      if (pf > 1) pf = 1;
+      return pf;
+
+  - platform: template
+    name: "Reactive Power"
+    unit_of_measurement: "var"
+    device_class: reactive_power
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: |-
+      float p = id(net_power).state;
+      float s = id(s_total).state;
+      if (!isfinite(p) || !isfinite(s) || s <= 5.0f) return NAN;
+      float q2 = (s * s) - (p * p);
+      if (q2 < 0) q2 = 0;
+      return sqrtf(q2);
 
   # the total net electricity (import - export)
   - platform: template

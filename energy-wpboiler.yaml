@@ -5,16 +5,16 @@
 # First some basic configuration
 #--------------------------------------------
 substitutions:
-  device_id: "energy-dishwasher"
+  device_id: "energy-wpboiler"
   build_root: !secret build_root
 
 esphome:
   name: ${device_id}
   build_path: ${build_root}/${device_id}
-  friendly_name: Energy Meter Dishwasher
+  friendly_name: Energy Meter Warmtepompboiler
   project:
     name: 'EcoGrid.Energy meter SONOFF mod (always on)'
-    version: Jan 11 2026
+    version: Jan 12 2026
 
 esp8266:
   board: esp8285
@@ -41,8 +41,8 @@ ota:
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
-
-# Enable fallback hotspot (captive portal) in case wifi connection fails
+  min_auth_mode: WPA2
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
   ap:
     ssid: "PowerPlug Hotspot"
     password: !secret wifi_ap_password
@@ -109,20 +109,20 @@ sensor:
       inverted: true
     cf_pin: GPIO4
     cf1_pin: GPIO5
-    current_resistor: 0.001
-    voltage_divider: 1534.6
+    current_resistor: 0.001025
+    voltage_divider: 1646.1
     update_interval: 3s
     # When both current and voltage sensors are defined we 
     # need to switch CF1 using SEL pin every x measurements
     initial_mode: VOLTAGE
-    change_mode_every: 4 #"never"
+    change_mode_every: 4
 
     current:
       name: "Current"
       id: i_rms
       accuracy_decimals: 2
       filters:
-        - multiply: 0.8605
+        - multiply: 0.9 #0.8605
     voltage:
       name: "Voltage"
       id: v_rms
@@ -145,26 +145,6 @@ sensor:
                   id(energy_today) += delta/1000.0; // to kWh
                 }
                 last = current;
-
-  # the total and today energy sensors
-  - platform: template
-    id: sensor_total
-    name: "Energy"
-    unit_of_measurement: "kWh"
-    accuracy_decimals: 2
-    device_class: energy
-    state_class: total_increasing
-    lambda: |-
-      return id(energy_total);
-  - platform: template
-    name: "Energy Today"
-    id: sensor_today
-    unit_of_measurement: "kWh"
-    accuracy_decimals: 2
-    device_class: energy
-    state_class: total_increasing
-    lambda: |-
-      return id(energy_today);
 
   # S, Q and PF
   - platform: template
@@ -206,7 +186,29 @@ sensor:
       float q2 = (s*s) - (p*p);
       if (q2 < 0) q2 = 0;
       return sqrtf(q2);
-      
+
+  # the total and today energy sensors
+  - platform: template
+    id: sensor_total
+    name: "Energy"
+    unit_of_measurement: "kWh"
+    accuracy_decimals: 2
+    device_class: energy
+    state_class: total_increasing
+    update_interval: 10s
+    lambda: |-
+      return id(energy_total);
+  - platform: template
+    name: "Energy Today"
+    id: sensor_today
+    unit_of_measurement: "kWh"
+    accuracy_decimals: 2
+    device_class: energy
+    state_class: total_increasing
+    update_interval: 10s
+    lambda: |-
+      return id(energy_today);
+
 # relais
 switch:
   - platform: gpio

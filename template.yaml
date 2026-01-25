@@ -11,6 +11,9 @@ esphome:
   name: ${device_id}
   build_path: ${build_root}/${device_id}  
   friendly_name: Template
+  project:
+    name: 'EcoGrid.Projectn naame met opties'
+    version: Jan 11 2026
   on_boot:
     priority: -100  # Zorgt dat dit als laatste gebeurt (na WiFi, tijd, etc.)
     then:
@@ -26,6 +29,10 @@ esp8266:
   board: esp12e   # 4MB flash
   board: d1_mini  # 4MB flash, wemos pin definitions
   board: esp01_1m # 1MB flash, 512kb SPIFFS
+  restore_from_flash: true  # enable restoring all preferences from flash on boot
+
+preferences:
+  flash_write_interval: never # set to 15min to enable restore with flash-wearing interval
 
 # Enable logging
 logger:
@@ -58,13 +65,15 @@ web_server:
     port: 80
     version: 3
 
+# -- Time Setup - preferred is to use HA but if there is real time dependency you may choose SNTP--
+time:
+  # - platform: sntp
+  #   timezone: Europe/Amsterdam  # CET/CEST (handles DST automatically)
+  - platform: homeassistant
+    id: time_id
+
 # and now we are adding the functionality of this device
 #--------------------------------------------
-# -- SNTP Time Setup --
-time:
-  - platform: sntp
-    id: sntp_time
-    timezone: Europe/Amsterdam  # CET/CEST (handles DST automatically)
 
 # -- Global variables --
 globals:

@@ -11,15 +11,21 @@ esphome:
   name: ${device_id}
   build_path: ${build_root}/${device_id}  
   friendly_name: Water Meter
+  project:
+    name: 'EcoGrid.Connect - Water meter'
+    version: Jan 11 2026
   on_boot:
     priority: -100  # Zorgt dat dit als laatste gebeurt (na WiFi, tijd, etc.)
     then:
       - lambda: |-
-          id(water_used_total) = id(water_used_total_persisted);  // Restore from persistent storage
           id(last_pulse_time) = millis();  // Initialize last pulse time
 
 esp8266:
-  board: esp01_1m
+  board: esp01_1m # in werkelijkheid is het eigenlijk een esp12e of d1_mini, maar OTA kan een wijziging bricken
+  restore_from_flash: true
+
+preferences:
+  flash_write_interval: 60min # Minimize flash wear, max 1hr loss on power loss (OTA seems to maintain RAM variables)
 
 # Enable logging
 logger:
@@ -54,23 +60,17 @@ web_server:
 
 # and now we are adding the functionality of this device
 #--------------------------------------------
-# -- SNTP Time Setup --
+# -- Time Setup --
 time:
-  - platform: sntp
-    id: sntp_time
-    timezone: Europe/Amsterdam  # CET/CEST (handles DST automatically)
+  - platform: homeassistant
+    id: time_id
 
 # -- Persistent globals --
 globals:
-  - id: water_used_total_persisted
-    type: float
-    restore_value: yes
-    initial_value: '2943.4736'
-
   - id: water_used_total
     type: float
-    restore_value: no # Do not persist flash read/writes is limited (100k)
-    initial_value: '0.0'
+    restore_value: yes # Restore from persistent storage
+    initial_value: '3024.8176'
 
   - id: water_used_today
     type: float
@@ -90,20 +90,13 @@ globals:
     initial_value: '0'
 
 script:
-  - id: delayed_save # anti-wear script
+  - id: delayed_save 
     mode: restart
     then:
       - delay: 10s
       - lambda: |-
           // Reset the water flow
           id(water_flow) = 0.0;  
-      - delay: 20s
-      - lambda: |-
-          // Save the current water_used_total to persistent storage
-          // but only when value has increased !!
-          if (id(water_used_total) > id(water_used_total_persisted))
-            id(water_used_total_persisted) = id(water_used_total);
-          ESP_LOGI("delayed_save", "The total water used (%0.4f) persisted!", id(water_used_total_persisted));
 
 sensor:
   # Add a sensor to monitor WiFi signal strength
@@ -200,7 +193,7 @@ interval:
     then:
       - lambda: |-
           static int last_day = -1;
-          auto time = id(sntp_time).now();
+          auto time = id(time_id).now();
           if (time.is_valid()) {
             // initialize last_day after boot
             if (last_day == -1) {
