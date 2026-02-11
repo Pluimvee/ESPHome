@@ -68,7 +68,10 @@ display:
     cs_pin: GPIO15
     dc_pin: GPIO2
     reset_pin: GPIO4   # dummy, niet aangesloten
-    rotation: 180
+    rotation: 0
+    dimensions:
+      width: 320
+      height: 240
 
     # percentage van framebuffer
     buffer_size: 25%

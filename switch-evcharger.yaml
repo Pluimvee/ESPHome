@@ -171,9 +171,9 @@ sensor:
                 static float last = 0.0;
                 float current = id(energy_since_boot).state;
                 float delta = current - last;
-                if (delta > 0 && delta < 100) {  // sanity check 100Wh in 3s = 120kWh
-                  id(energy_total) += delta/1000.0; // to kWh
-                  id(energy_today) += delta/1000.0; // to kWh
+                if (delta > 0 && delta < 0.1) {  // sanity check 100Wh in 5s 
+                  id(energy_total) += delta; // already in kWh
+                  id(energy_today) += delta; 
                 }
                 last = current;
 
