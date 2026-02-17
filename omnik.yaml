@@ -69,6 +69,11 @@ web_server:
     port: 80
     version: 3
 
+# -- Time Setup --
+time:
+  - platform: homeassistant
+    id: time_id
+
 # Persistente teller voor inverter-total (inverter reset 's nachts)
 globals:
   - id: energy_total
@@ -181,3 +186,22 @@ sensor:
     state_class: total_increasing
     lambda: |-
       return id(energy_total);
+
+interval:
+  # -- Midnight reset for "Energy Used Today and Operating Hours" --
+  - interval: 60s
+    then:
+      - lambda: |-
+          static int last_day = -1;
+          auto time = id(time_id).now();
+          if (time.is_valid()) {
+            // initialize last_day after boot
+            if (last_day == -1) {
+              last_day = time.day_of_year;
+            }
+            // Reset omnik_energy_today at midnight
+            if (time.day_of_year != last_day) {
+              last_day = time.day_of_year;
+              id(omnik_energy_today).publish_state(0.0f);
+            }
+          }

@@ -1,0 +1,419 @@
+substitutions:
+  device_id: thermostat
+  device_name: Thermostat
+  build_root: !secret build_root
+
+esphome:
+  name: ${device_id}
+  friendly_name: ${device_name}
+  comment: Thermostat migration from Arduino to ESPHome with custom thermo control
+  build_path: ${build_root}/${device_id}
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+external_components:
+  - source:
+      type: local
+      path: components
+
+logger:
+  level: DEBUG
+
+api:
+  encryption:
+    key: !secret api_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: Thermostat Fallback
+    password: !secret wifi_ap_password
+
+captive_portal:
+
+time:
+  - platform: homeassistant
+    id: ha_time
+
+preferences:
+  flash_write_interval: 60s
+
+spi:
+  clk_pin: GPIO18
+  mosi_pin: GPIO23
+
+one_wire:
+  - platform: gpio
+    pin: GPIO25
+    id: onewire_bus
+
+opentherm:
+  in_pin: GPIO17
+  out_pin: GPIO16
+  sync_mode: true
+
+sensor:
+  - platform: dallas_temp
+    one_wire_id: onewire_bus
+    index: 0
+    name: Room Temperature Raw
+    id: ds18_room_raw
+    internal: true
+    update_interval: 10s
+    filters:
+      - offset: -1.3
+
+  - platform: opentherm
+    t_outside:
+      name: OT Outside Raw
+      id: ot_outside_raw
+      internal: true
+    t_ret:
+      name: OT Return Raw
+      id: ot_return_raw
+      internal: true
+    t_boiler:
+      name: OT Boiler Raw
+      id: ot_boiler_raw
+      internal: true
+    rel_mod_level:
+      name: Modulation Level
+      id: ot_modulation
+      unit_of_measurement: "%"
+      state_class: measurement
+      on_value:
+        then:
+          - component.update: thermostat_display
+    ch_pressure:
+      name: CH Pressure
+      id: ot_pressure
+      unit_of_measurement: bar
+      device_class: pressure
+      state_class: measurement
+
+  - platform: template
+    name: Room Temperature
+    id: st_room_temp
+    unit_of_measurement: "C"
+    device_class: temperature
+    state_class: measurement
+    lambda: return id(thermo_control_component).inside_temperature();
+    update_interval: 10s
+    on_value:
+      then:
+        - component.update: thermostat_display
+
+  - platform: template
+    name: Outside Temperature
+    id: st_outside_temp
+    unit_of_measurement: "C"
+    device_class: temperature
+    state_class: measurement
+    lambda: return id(thermo_control_component).outside_temperature();
+    update_interval: 10s
+    on_value:
+      then:
+        - component.update: thermostat_display
+
+  - platform: template
+    name: Inlet Temperature
+    id: st_inlet_temp
+    unit_of_measurement: "C"
+    device_class: temperature
+    state_class: measurement
+    lambda: return id(thermo_control_component).inlet_temperature();
+    update_interval: 10s
+    on_value:
+      then:
+        - component.update: thermostat_display
+
+  - platform: template
+    name: Outlet Temperature
+    id: st_outlet_temp
+    unit_of_measurement: "C"
+    device_class: temperature
+    state_class: measurement
+    lambda: return id(thermo_control_component).outlet_temperature();
+    update_interval: 10s
+    on_value:
+      then:
+        - component.update: thermostat_display
+
+  - platform: template
+    name: Water Setpoint
+    id: st_setpoint_temp
+    unit_of_measurement: "C"
+    device_class: temperature
+    state_class: measurement
+    lambda: return id(thermo_control_component).setpoint_temperature();
+    update_interval: 10s
+    on_value:
+      then:
+        - component.update: thermostat_display
+
+  - platform: template
+    name: Setpoint Trend
+    id: st_setpoint_trend
+    unit_of_measurement: "C"
+    state_class: measurement
+    lambda: return id(thermo_control_component).setpoint_trend();
+    update_interval: 10s
+    on_value:
+      then:
+        - component.update: thermostat_display
+
+binary_sensor:
+  - platform: opentherm
+    fault_indication:
+      name: Boiler Fault
+      id: ot_fault
+    ch_active:
+      name: Boiler CH Active
+      id: ot_ch_active
+    dhw_active:
+      name: Boiler DHW Active
+      id: ot_dhw_active
+    flame_on:
+      name: Boiler Flame
+      id: ot_flame
+    cooling_active:
+      name: Boiler Cooling Active
+      id: ot_cooling_active
+
+  - platform: template
+    name: Smart Heating Enabled
+    lambda: return id(thermo_control_component).heating_enabled();
+
+  - platform: template
+    name: Smart Cooling Enabled
+    lambda: return id(thermo_control_component).cooling_enabled();
+
+switch:
+  - platform: opentherm
+    ch_enable:
+      name: CH Enable OT
+      id: ot_ch_enable
+      restore_mode: DISABLED
+    dhw_enable:
+      name: DHW Enable OT
+      id: ot_dhw_enable
+      restore_mode: RESTORE_DEFAULT_OFF
+    cooling_enable:
+      name: Cooling Enable OT
+      id: ot_cooling_enable
+      restore_mode: DISABLED
+
+output:
+  - platform: opentherm
+    t_set:
+      id: ot_t_set_output
+      min_value: 0
+      max_value: 55
+      zero_means_zero: true
+    t_room_set:
+      id: ot_t_room_set_output
+      min_value: 18
+      max_value: 25
+    t_room:
+      id: ot_t_room_output
+      min_value: 0
+      max_value: 40
+
+number:
+  - platform: template
+    name: Target Temperature
+    id: target_temp_number
+    min_value: 18.0
+    max_value: 25.0
+    step: 0.1
+    restore_value: true
+    optimistic: true
+    initial_value: 21.0
+    set_action:
+      - component.update: thermostat_display
+
+  - platform: template
+    name: Heating Curve Factor A
+    id: factor_a_number
+    min_value: 0.0
+    max_value: 1.5
+    step: 0.05
+    restore_value: true
+    optimistic: true
+    initial_value: 0.55
+    set_action:
+      - component.update: thermostat_display
+
+  - platform: template
+    name: Heating Curve Factor B
+    id: factor_b_number
+    min_value: 0.0
+    max_value: 1.5
+    step: 0.05
+    restore_value: true
+    optimistic: true
+    initial_value: 0.45
+    set_action:
+      - component.update: thermostat_display
+
+  - platform: template
+    name: Heating Curve Factor C
+    id: factor_c_number
+    min_value: 0.0
+    max_value: 1.5
+    step: 0.05
+    restore_value: true
+    optimistic: true
+    initial_value: 0.35
+    set_action:
+      - component.update: thermostat_display
+
+thermo_control:
+  id: thermo_control_component
+  room_raw_sensor: ds18_room_raw
+  outside_raw_sensor: ot_outside_raw
+  inlet_raw_sensor: ot_return_raw
+  outlet_raw_sensor: ot_boiler_raw
+  target_number: target_temp_number
+  factor_a_number: factor_a_number
+  factor_b_number: factor_b_number
+  factor_c_number: factor_c_number
+  ch_enable_switch: ot_ch_enable
+  cooling_enable_switch: ot_cooling_enable
+  t_set_output: ot_t_set_output
+  t_room_set_output: ot_t_room_set_output
+  t_room_output: ot_t_room_output
+  update_interval: 10s
+  antipendel: 30min
+
+display:
+  - platform: st7735
+    id: thermostat_display
+    model: INITR_BLACKTAB
+    cs_pin: GPIO5
+    dc_pin: GPIO27
+    col_start: 0
+    row_start: 0
+    rotation: 90
+    device_width: 128
+    device_height: 160
+    auto_clear_enabled: false
+    update_interval: never
+    lambda: |-
+      const int left = 0;
+      const int mid = 54;
+      const int right = 108;
+      const Color black = Color(0, 0, 0);
+      const int w_small = 48;
+      const int w_mid = 44;
+      const int h = 14;
+
+      static bool initialized = false;
+      static std::string prev_time;
+      static std::string prev_outside;
+      static std::string prev_room;
+      static std::string prev_target;
+      static std::string prev_inlet;
+      static std::string prev_outlet;
+      static std::string prev_setpoint;
+      static std::string prev_level;
+      static std::string prev_ch;
+      static std::string prev_cool;
+
+      auto render_field = [&](int x, int y, int width, std::string &cache, const std::string &value) {
+        if (value == cache)
+          return;
+        it.filled_rectangle(x, y, width, h, black);
+        it.print(x, y, value.c_str());
+        cache = value;
+      };
+
+      if (!initialized) {
+        it.fill(black);
+        it.print(left, 16, "Outside");
+        it.print(mid, 16, "Room");
+        it.print(right, 16, "Target");
+        it.print(left, 54, "Inlet");
+        it.print(mid, 54, "Outlet");
+        it.print(right, 54, "Set");
+        initialized = true;
+      }
+
+      std::string time_text = "";
+      if (id(ha_time).now().is_valid()) {
+        char buf[24];
+        id(ha_time).now().strftime(buf, sizeof(buf), "%a %d %b %H:%M");
+        time_text = buf;
+      }
+      render_field(left, 0, 160, prev_time, time_text);
+
+      std::string outside_text = "n/a";
+      if (id(st_outside_temp).has_state()) {
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%.1f", id(st_outside_temp).state);
+        outside_text = buf;
+      }
+      render_field(left, 30, w_small, prev_outside, outside_text);
+
+      std::string room_text = "n/a";
+      if (id(st_room_temp).has_state()) {
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%.1f", id(st_room_temp).state);
+        room_text = buf;
+      }
+      render_field(mid, 30, w_mid, prev_room, room_text);
+
+      char target_buf[8];
+      snprintf(target_buf, sizeof(target_buf), "%.1f", id(target_temp_number).state);
+      render_field(right, 30, w_small, prev_target, target_buf);
+
+      std::string inlet_text = "n/a";
+      if (id(st_inlet_temp).has_state()) {
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%.1f", id(st_inlet_temp).state);
+        inlet_text = buf;
+      }
+      render_field(left, 68, w_small, prev_inlet, inlet_text);
+
+      std::string outlet_text = "n/a";
+      if (id(st_outlet_temp).has_state()) {
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%.1f", id(st_outlet_temp).state);
+        outlet_text = buf;
+      }
+      render_field(mid, 68, w_mid, prev_outlet, outlet_text);
+
+      std::string setpoint_text = "n/a";
+      if (id(st_setpoint_temp).has_state()) {
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%.1f", id(st_setpoint_temp).state);
+        setpoint_text = buf;
+      }
+      render_field(right, 68, w_small, prev_setpoint, setpoint_text);
+
+      std::string level_text = "Lvl n/a";
+      if (id(ot_modulation).has_state()) {
+        char buf[16];
+        snprintf(buf, sizeof(buf), "Lvl %.1f%%", id(ot_modulation).state);
+        level_text = buf;
+      }
+      render_field(left, 100, 54, prev_level, level_text);
+
+      render_field(mid, 100, 56, prev_ch, std::string("CH:") + (id(thermo_control_component).heating_enabled() ? "on" : "off"));
+      render_field(mid, 114, 56, prev_cool, std::string("Cool:") + (id(thermo_control_component).cooling_enabled() ? "on" : "off"));
+
+interval:
+  - interval: 30s
+    then:
+      - component.update: thermostat_display
+
+status_led:
+  pin: GPIO2
