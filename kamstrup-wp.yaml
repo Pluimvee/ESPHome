@@ -246,16 +246,22 @@ script:
 
           // --- WP off detection ---
           static uint32_t poweron_timer = 0;
+          const uint32_t POWERON_GRACE_PERIOD = 60000UL * 2UL; // 2 minutes grace period after power on before defrost detection
+
           if (fabsf(pwr) < 300.0f) {
-            poweron_timer = now + 60000UL * 2UL;  // (re)set grace period for after a poweron to 2 minutes
+            poweron_timer = now + POWERON_GRACE_PERIOD;  
             ESP_LOGI("pump_control", "Pump seems to be turned off (pwr=%.0fW) -> skip control", pwr);
             return;
           }
+          // Clamp: timer mag nooit meer dan de grace period in de toekomst liggen (beschermt tegen millis() overflow)
+          bool poweron_grace = (poweron_timer > now) && ((poweron_timer - now) <= POWERON_GRACE_PERIOD);
 
           // --- Defrost / Cooling ---
           static uint32_t defrost_timer = 0;
-          if (pwr < -1000.0f && poweron_timer < now) {
-            defrost_timer = now + 5UL * 60000UL ;  // (re)set grace periode for after a defrost to 5 minutes
+          const uint32_t DEFROST_GRACE_PERIOD = 60000UL * 5UL; // 5 minutes grace period after defrost
+
+          if (pwr < -1000.0f && !poweron_grace) {  // detect strong negative power as defrost/cooling mode, but not when we are in poweron grace period
+            defrost_timer = now + DEFROST_GRACE_PERIOD ;
             int pct = 100;
             if (id(wilo_current_pct) != pct) id(wilo_current_pct) = pct;
             ESP_LOGI("pump_control", "Pump defrost/cooling: pwr=%.0fW, pct=%d%%", pwr, pct);
@@ -263,16 +269,19 @@ script:
           }
 
           // --- Hold timers active ---
-          if (poweron_timer > now) {
+          if (poweron_grace) {
             ESP_LOGI("pump_control", "Pump poweron grace period active (%.0f sec left)",
                       (poweron_timer - now) / 1000.0f);
             return;
           }
-          if (defrost_timer > now) {
+          if (defrost_timer > now && (defrost_timer - now) <= DEFROST_GRACE_PERIOD) {
             ESP_LOGI("pump_control", "Pump defrost grace period active (%.0f sec left)",
                       (defrost_timer - now) / 1000.0f);
             return;
           }
+          // Timers niet actief: forceer naar 0 als veiligheid
+          poweron_timer = 0;
+          defrost_timer = 0;
 
           // --- 1) Auto mode: power-based flow target ---
           float flow_target = id(flow_target_auto);
