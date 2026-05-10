@@ -1,4 +1,4 @@
-# Copyright (c) 2025 Pluimvee
+# Copyright (c) 2026 Pluimvee
 # ModBus TCP-RTU Bridge ESPHome configuration 
 
 # First some basic configuration
@@ -11,6 +11,9 @@ esphome:
   name: ${device_id}
   build_path: ${build_root}/${device_id}  
   friendly_name: ModBus Bridge
+  project:
+    name: 'EcoGrid.ModBus TCP-RTU Bridge'
+    version: May 10 2026
 
 esp8266:
   board: esp01_1m
@@ -36,7 +39,7 @@ wifi:
 
 # Enable logging
 logger:
-  level: INFO  
+  level: INFO
   baud_rate: 0  # Disable logging on UART (as we need the UART)
 
 #captive_portal:
