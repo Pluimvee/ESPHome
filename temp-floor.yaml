@@ -11,9 +11,12 @@ esphome:
   name: ${device_id}
   build_path: ${build_root}/${device_id}  
   friendly_name: Floor Temperature
+  project:
+    name: 'EcoGrid.Floor Temperature Monitor'
+    version: June 2 2026
 
 esp8266:
-  board: esp01_1m # cannot safely convert to esp12e using OTA due flash size
+  board: esp12e
 
 # Enable Home Assistant API
 api:
@@ -29,6 +32,9 @@ ota:
 logger:
   level: INFO  # Set the logging level to DEBUG
   baud_rate: 0
+
+debug:
+  update_interval: never
 
 wifi:
   ssid: !secret wifi_ssid
@@ -98,3 +104,9 @@ sensor:
     icon: mdi:thermometer-chevron-up
     update_interval: 5s
    
+  # - platform: template
+  #   name: "Flash chip size"
+  #   unit_of_measurement: "kB"
+  #   lambda: |-
+  #     return ESP.getFlashChipRealSize() / 1024.0;
+  #   update_interval: 60s
