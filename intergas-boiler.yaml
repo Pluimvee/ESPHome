@@ -6,7 +6,7 @@
 substitutions:
   device_id: intergas-boiler
   build_root: !secret build_root
-  friendly_name: Intergas HRE24-18
+  friendly_name: Intergas HRE24_18
 
 packages:
   wifi: !include wifi.yaml
