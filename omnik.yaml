@@ -10,13 +10,16 @@ substitutions:
   # + geschatte missende periode dec 2023 t/m 11 feb 2026 obv HA statistieken (dmv codex)
   min_total_kwh: "23566.0"
 
+packages:
+  version: !include version.yaml
+
 esphome:
   name: ${device_id}
   friendly_name: Omnik Inverter
   build_path: ${build_root}/${device_id}  
   project:
     name: 'EcoGrid.Omnik Inverter WiFi Bridge'
-    version: Feb 10 2026
+    version: ${version}
   on_boot:
     priority: -100
     then:

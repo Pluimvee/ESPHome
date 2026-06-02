@@ -7,13 +7,16 @@ substitutions:
   device_id: outside-temp
   build_root: !secret build_root
 
+packages:
+  version: !include version.yaml
+
 esphome:
   name: ${device_id}
   build_path: ${build_root}/${device_id}  
   friendly_name: Outside Temperature
   project:
     name: 'EcoGrid.Outside Temperature Monitor'
-    version: June 2 2026
+    version: ${version}
 
 esp8266:
   board: esp12e

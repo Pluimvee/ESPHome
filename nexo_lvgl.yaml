@@ -1,0 +1,1120 @@
+# LVGL display layout for Nexo (Sunton ESP32-3248S035R)
+# Included via packages from nexo.yaml
+
+# -----------------------------------------------------------
+# LVGL kleurpalet
+# -----------------------------------------------------------
+color:
+  - id: col_bg
+    hex: "1A1C1E"
+  - id: col_bg2
+    hex: "22252A"
+  - id: col_bg3
+    hex: "2A2E34"
+  - id: col_accent
+    hex: "4FC3F7"
+  - id: col_text
+    hex: "E8EAED"
+  - id: col_text2
+    hex: "9AA0A6"
+  - id: col_green
+    hex: "66BB6A"
+  - id: col_orange
+    hex: "FFA726"
+  - id: col_red
+    hex: "EF5350"
+  - id: col_yellow
+    hex: "FFEE58"
+  - id: col_blue
+    hex: "42A5F5"
+  - id: col_teal
+    hex: "26A69A"
+  - id: col_tab_active
+    hex: "2A2E34"
+  - id: col_border
+    hex: "3A3E44"
+
+# -----------------------------------------------------------
+# Fonts (gfonts auto-fetched)
+# -----------------------------------------------------------
+font:
+  - file: "gfonts://Roboto"
+    id: f_sm
+    size: 14
+    bpp: 4
+  - file: "gfonts://Roboto"
+    id: f_md
+    size: 18
+    bpp: 4
+  - file: "gfonts://Roboto"
+    id: f_lg
+    size: 32
+    bpp: 4
+  - file: "gfonts://Roboto@500"
+    id: f_xl
+    size: 56
+    bpp: 4
+  - file: "../fonts/materialdesignicons-webfont.ttf"
+    id: f_mdi_tab
+    size: 34
+    bpp: 4
+    glyphs:
+      - "\U000F0335"  # mdi:lightbulb
+      - "\U000F0F54"  # mdi:home-thermometer
+      - "\U000F140B"  # mdi:lightning-bolt
+      - "\U000F0493"  # mdi:cog
+  - file: "../fonts/materialdesignicons-webfont.ttf"
+    id: f_mdi_sm
+    size: 18
+    bpp: 4
+    glyphs:
+      - "\U000F0A70"  # mdi:silverware-fork-knife (eetkamer)
+      - "\U000F04B9"  # mdi:sofa-single (woonkamer)
+      - "\U000F032A"  # mdi:leaf (buiten)
+      - "\U000F0238"  # mdi:fire (hvac heating)
+      - "\U000F0717"  # mdi:snowflake (hvac cooling)
+      - "\U000F0393"  # mdi:thermostat (hvac)
+  - file: "../fonts/materialdesignicons-webfont.ttf"
+    id: f_mdi_md
+    size: 24
+    bpp: 4
+    glyphs:
+      - "\U000F0238"  # mdi:fire (hvac heating)
+      - "\U000F0717"  # mdi:snowflake (hvac cooling)
+  - file: "../fonts/materialdesignicons-webfont.ttf"
+    id: f_mdi_lights
+    size: 56
+    bpp: 4
+    glyphs:
+      - "\U000F0E4F" # mdi:lightbulb-off            off
+      - "\U000F0A70" # mdi:silverware-fork-knife    dinner
+      - "\U000F059B" # mdi:weather-sunset-down      dusk
+      - "\U000F06B5" # mdi:lamp                     evening
+  - file: "../fonts/materialdesignicons-webfont.ttf"
+    id: f_mdi_scene_sm
+    size: 36
+    bpp: 4
+    glyphs:
+      - "\U000F059C" # mdi:weather-sunset-up        morning
+      - "\U000F0C4C" # mdi:car-light-high           full
+      - "\U000F1056" # mdi:party-popper             fun
+      - "\U000F1A60" # mdi:post-lamp                arriving
+
+# -----------------------------------------------------------
+# LVGL UI
+#  - 1 page met tabview (4 tabs: Lights / Climate / Energy / Settings)
+#  - tab_style.pad_right: 96 → ruimte voor klok in top_layer
+#  - top_layer = klok rechts (altijd zichtbaar)
+# -----------------------------------------------------------
+lvgl:
+  displays:
+    - tft
+  touchscreens:
+    - touch
+  bg_color: col_bg
+  border_width: 0
+  outline_width: 0
+  shadow_width: 0
+  default_font: f_md
+
+  style_definitions:
+    - id: style_btn
+      bg_color: col_bg2
+      bg_opa: COVER
+      border_color: col_border
+      border_width: 1
+      radius: 8
+      text_color: col_text
+      text_font: f_sm
+      pad_all: 6
+
+    - id: style_card
+      bg_color: col_bg2
+      bg_opa: COVER
+      border_color: col_border
+      border_width: 1
+      radius: 8
+      pad_all: 8
+
+    - id: style_scene_btn
+      bg_color: col_bg
+      bg_opa: COVER
+      border_width: 0
+      radius: 0
+      text_color: col_text2
+      pad_all: 0
+
+  # Klok altijd zichtbaar rechts boven alle tabs
+  top_layer:
+    widgets:
+      - label:
+          id: clock_label
+          align: TOP_RIGHT
+          x: -8
+          y: 4
+          text_font: f_md
+          text_color: col_text
+          text: "--:--"
+      - label:
+          id: date_label
+          align: TOP_RIGHT
+          x: -8
+          y: 25
+          text_font: f_sm
+          text_color: col_text2
+          text: ""
+
+  pages:
+    - id: main_page
+      bg_color: col_bg
+      pad_all: 0
+      widgets:
+        - tabview:
+            id: main_tabview
+            x: 0
+            y: 0
+            width: 480
+            height: 320
+            size: 50
+            bg_color: col_bg
+            border_width: 0
+            scrollbar_mode: "OFF"
+            tab_style:
+              bg_color: col_bg
+              text_font: f_mdi_tab
+              text_color: col_text2
+              pad_right: 96
+              border_width: 0
+              items:
+                pad_top: 0
+                pad_right: 0
+                pad_bottom: 0
+                pad_left: 0
+                checked:
+                  bg_color: col_tab_active
+                  text_color: col_accent
+                  border_width: 2
+                  border_side: BOTTOM
+                  border_color: col_accent
+            tabs:
+              # ============ Tab: Lights ============
+              - name: "\U000F0335"
+                pad_top: 0
+                pad_right: 0
+                pad_bottom: 0
+                pad_left: 0
+                widgets:
+                  # Rij 1 (groot): Dusk / Dinner / Evening / Off
+                  - button:
+                      id: btn_l_dusk
+                      styles: style_scene_btn
+                      align: TOP_LEFT
+                      x: 0
+                      y: 30
+                      width: 120
+                      height: 140
+                      on_click:
+                        - homeassistant.action:
+                            action: input_select.select_option
+                            data:
+                              entity_id: input_select.light_mode
+                              option: Dusk
+                      widgets:
+                        - label:
+                            text: "\U000F059B"
+                            text_font: f_mdi_lights
+                            align: CENTER
+                  - button:
+                      id: btn_l_dinner
+                      styles: style_scene_btn
+                      align: TOP_LEFT
+                      x: 120
+                      y: 30
+                      width: 120
+                      height: 140
+                      on_click:
+                        - homeassistant.action:
+                            action: input_select.select_option
+                            data:
+                              entity_id: input_select.light_mode
+                              option: Dinner
+                      widgets:
+                        - label:
+                            text: "\U000F0A70"
+                            text_font: f_mdi_lights
+                            align: CENTER
+                  - button:
+                      id: btn_l_evening
+                      styles: style_scene_btn
+                      align: TOP_LEFT
+                      x: 240
+                      y: 30
+                      width: 120
+                      height: 140
+                      on_click:
+                        - homeassistant.action:
+                            action: input_select.select_option
+                            data:
+                              entity_id: input_select.light_mode
+                              option: Evening
+                      widgets:
+                        - label:
+                            text: "\U000F06B5"
+                            text_font: f_mdi_lights
+                            align: CENTER
+                  - button:
+                      id: btn_l_off
+                      styles: style_scene_btn
+                      align: TOP_LEFT
+                      x: 360
+                      y: 30
+                      width: 120
+                      height: 140
+                      on_click:
+                        - homeassistant.action:
+                            action: input_select.select_option
+                            data:
+                              entity_id: input_select.light_mode
+                              option: "Off"
+                      widgets:
+                        - label:
+                            text: "\U000F0E4F"
+                            text_font: f_mdi_lights
+                            align: CENTER
+                  # Rij 2 (klein): Morning / Full / Fun / Arriving
+                  - button:
+                      id: btn_l_morning
+                      styles: style_scene_btn
+                      align: TOP_LEFT
+                      x: 0
+                      y: 176
+                      width: 120
+                      height: 72
+                      on_click:
+                        - homeassistant.action:
+                            action: input_select.select_option
+                            data:
+                              entity_id: input_select.light_mode
+                              option: Morning
+                      widgets:
+                        - label:
+                            text: "\U000F059C"
+                            text_font: f_mdi_scene_sm
+                            align: CENTER
+                  - button:
+                      id: btn_l_full
+                      styles: style_scene_btn
+                      align: TOP_LEFT
+                      x: 120
+                      y: 176
+                      width: 120
+                      height: 72
+                      on_click:
+                        - homeassistant.action:
+                            action: input_select.select_option
+                            data:
+                              entity_id: input_select.light_mode
+                              option: Full
+                      widgets:
+                        - label:
+                            text: "\U000F0C4C"
+                            text_font: f_mdi_scene_sm
+                            align: CENTER
+                  - button:
+                      id: btn_l_fun
+                      styles: style_scene_btn
+                      align: TOP_LEFT
+                      x: 240
+                      y: 176
+                      width: 120
+                      height: 72
+                      on_click:
+                        - homeassistant.action:
+                            action: input_select.select_option
+                            data:
+                              entity_id: input_select.light_mode
+                              option: Fun
+                      widgets:
+                        - label:
+                            text: "\U000F1056"
+                            text_font: f_mdi_scene_sm
+                            align: CENTER
+                  - button:
+                      id: btn_l_arriving
+                      styles: style_scene_btn
+                      align: TOP_LEFT
+                      x: 360
+                      y: 176
+                      width: 120
+                      height: 72
+                      on_click:
+                        - homeassistant.action:
+                            action: input_select.select_option
+                            data:
+                              entity_id: input_select.light_mode
+                              option: Arriving
+                      widgets:
+                        - label:
+                            text: "\U000F1A60"
+                            text_font: f_mdi_scene_sm
+                            align: CENTER
+
+              # ============ Tab: Climate ============
+              - name: "\U000F0F54"
+                pad_top: 0
+                pad_right: 0
+                pad_bottom: 0
+                pad_left: 0
+                widgets:
+                  # HVAC (volledige linker helft) — 232×260
+                  - obj:
+                      x: 5
+                      y: 5
+                      width: 232
+                      height: 260
+                      bg_color: 0x070E1B
+                      bg_opa: 95%
+                      border_width: 1
+                      border_color: 0x162038
+                      border_opa: 20%
+                      radius: 16
+                      scrollbar_mode: "OFF"
+                      pad_all: 0
+                      widgets:
+                        - label:
+                            x: 7
+                            y: 8
+                            width: 20
+                            height: 20
+                            text: "\U000F0393"
+                            text_font: f_mdi_sm
+                            text_align: CENTER
+                            text_color: 0x48CADB
+                        - label:
+                            x: 32
+                            y: 10
+                            text: "Verwarming"
+                            text_color: 0x8E9FB8
+                            text_font: f_sm
+                        - label:
+                            id: hvac_heating
+                            x: 155
+                            y: 2
+                            width: 24
+                            height: 30
+                            text: "\U000F0238"
+                            text_font: f_mdi_md
+                            text_align: CENTER
+                            text_color: 0x444444
+                        - label:
+                            id: hvac_cooling
+                            x: 182
+                            y: 2
+                            width: 24
+                            height: 30
+                            text: "\U000F0717"
+                            text_font: f_mdi_md
+                            text_align: CENTER
+                            text_color: 0x444444
+                        - line:
+                            x: 7
+                            y: 252
+                            width: 216
+                            height: 2
+                            points:
+                              - 0, 0
+                              - 216, 0
+                            line_color: 0x48CADB
+                            line_rounded: true
+                        # Systeem-arcs: inlet / setpoint / outlet (rechtsonder)
+                        - obj:
+                            id: hvac_temps
+                            align: BOTTOM_RIGHT
+                            width: 130
+                            height: 130
+                            bg_opa: 0%
+                            border_width: 0
+                            scrollbar_mode: "OFF"
+                            widgets:
+                              - arc:
+                                  id: hvac_Tinlet
+                                  width: 120
+                                  height: 120
+                                  align: CENTER
+                                  value: 20
+                                  min_value: 10
+                                  max_value: 50
+                                  adjustable: false
+                                  start_angle: 135
+                                  end_angle: 45
+                                  arc_color: 0x1045B7
+                                  arc_width: 6
+                                  arc_opa: 20%
+                                  arc_rounded: true
+                                  indicator:
+                                    arc_color: 0x1045B7
+                                    arc_width: 6
+                                    arc_opa: 100%
+                                    arc_rounded: true
+                                  knob:
+                                    bg_opa: 0%
+                                  bg_opa: 0%
+                                  border_width: 0
+                              - arc:
+                                  id: hvac_TSet
+                                  width: 106
+                                  height: 106
+                                  align: CENTER
+                                  value: 20
+                                  min_value: 10
+                                  max_value: 50
+                                  adjustable: false
+                                  start_angle: 135
+                                  end_angle: 45
+                                  arc_color: 0x10B981
+                                  arc_width: 6
+                                  arc_opa: 20%
+                                  arc_rounded: true
+                                  indicator:
+                                    arc_color: 0x10B981
+                                    arc_width: 6
+                                    arc_opa: 100%
+                                    arc_rounded: true
+                                  knob:
+                                    bg_opa: 0%
+                                  bg_opa: 0%
+                                  border_width: 0
+                              - arc:
+                                  id: hvac_Toutlet
+                                  width: 92
+                                  height: 92
+                                  align: CENTER
+                                  value: 20
+                                  min_value: 10
+                                  max_value: 50
+                                  adjustable: false
+                                  start_angle: 135
+                                  end_angle: 45
+                                  arc_color: 0xB71E10
+                                  arc_width: 6
+                                  arc_opa: 20%
+                                  arc_rounded: true
+                                  indicator:
+                                    arc_color: 0xB71E10
+                                    arc_width: 6
+                                    arc_opa: 100%
+                                    arc_rounded: true
+                                  knob:
+                                    bg_opa: 0%
+                                  bg_opa: 0%
+                                  border_width: 0
+                              - label:
+                                  id: hvac_Tset_text
+                                  align: CENTER
+                                  width: 70
+                                  height: 38
+                                  text: "--.-"
+                                  text_font: f_md
+                                  text_color: 0xF1F5F9
+                                  text_align: CENTER
+                              - label:
+                                  x: 50
+                                  y: 73
+                                  width: 30
+                                  height: 15
+                                  text: "°C"
+                                  text_color: 0x8E9FB8
+                                  text_align: CENTER
+                                  text_font: f_sm
+                        # Kamer-arcs: setpoint (dik) + kamertemp (dun) (linksonder)
+                        - obj:
+                            id: thermostate
+                            align: BOTTOM_LEFT
+                            width: 170
+                            height: 170
+                            bg_opa: 0%
+                            border_width: 0
+                            scrollbar_mode: "OFF"
+                            widgets:
+                              - arc:
+                                  id: hvac_TroomSet
+                                  width: 160
+                                  height: 160
+                                  align: CENTER
+                                  value: 20
+                                  min_value: 10
+                                  max_value: 30
+                                  adjustable: false
+                                  start_angle: 135
+                                  end_angle: 45
+                                  arc_color: 0x1045B7
+                                  arc_width: 16
+                                  arc_opa: 20%
+                                  arc_rounded: true
+                                  indicator:
+                                    arc_color: 0x1045B7
+                                    arc_width: 16
+                                    arc_opa: 100%
+                                    arc_rounded: true
+                                  knob:
+                                    bg_opa: 0%
+                                  bg_opa: 0%
+                                  border_width: 0
+                              - arc:
+                                  id: hvac_Troom
+                                  width: 140
+                                  height: 140
+                                  align: CENTER
+                                  value: 20
+                                  min_value: 10
+                                  max_value: 30
+                                  adjustable: false
+                                  start_angle: 130
+                                  end_angle: 50
+                                  arc_color: 0x10B981
+                                  arc_width: 8
+                                  arc_opa: 0%
+                                  arc_rounded: true
+                                  indicator:
+                                    arc_color: 0x10B981
+                                    arc_width: 8
+                                    arc_opa: 100%
+                                    arc_rounded: true
+                                  knob:
+                                    bg_opa: 0%
+                                  bg_opa: 0%
+                                  border_width: 0
+                              - label:
+                                  id: hvac_Troom_text
+                                  align: CENTER
+                                  width: 80
+                                  height: 55
+                                  text: "--.-"
+                                  text_font: f_lg
+                                  text_color: 0xF1F5F9
+                                  text_align: CENTER
+                              - label:
+                                  align: CENTER
+                                  y: 22
+                                  width: 28
+                                  height: 15
+                                  text: "°C"
+                                  text_color: 0x8E9FB8
+                                  text_align: CENTER
+                                  text_font: f_sm
+
+                  # Buiten (rechts boven) — 232×83
+                  - obj:
+                      x: 243
+                      y: 5
+                      width: 232
+                      height: 83
+                      bg_color: 0x070E1B
+                      bg_opa: 95%
+                      border_width: 1
+                      border_color: 0x162038
+                      border_opa: 20%
+                      radius: 16
+                      scrollbar_mode: "OFF"
+                      pad_all: 0
+                      widgets:
+                        - label:
+                            x: 13
+                            y: 7
+                            width: 20
+                            height: 20
+                            text: "\U000F032A"
+                            text_font: f_mdi_sm
+                            text_align: CENTER
+                            text_color: 0x9BC412
+                        - label:
+                            x: 120
+                            y: 7
+                            width: 101
+                            height: 16
+                            text: "Buiten"
+                            text_color: 0x8E9FB8
+                            text_align: RIGHT
+                            long_mode: CLIP
+                            text_font: f_sm
+                        - label:
+                            id: outside_temp
+                            x: 9
+                            y: 26
+                            width: 65
+                            height: 30
+                            text: "--.-"
+                            text_color: 0xF1F5F9
+                            text_align: RIGHT
+                            long_mode: CLIP
+                            text_font: f_lg
+                        - label:
+                            x: 74
+                            y: 38
+                            width: 30
+                            height: 15
+                            text: "°C"
+                            text_color: 0x8E9FB8
+                            text_align: LEFT
+                            text_font: f_sm
+                        - label:
+                            id: irradiation
+                            x: 110
+                            y: 50
+                            width: 56
+                            height: 18
+                            text: "---"
+                            text_color: 0xF1F5F9
+                            text_align: RIGHT
+                            long_mode: CLIP
+                            text_font: f_md
+                        - label:
+                            x: 171
+                            y: 56
+                            width: 40
+                            height: 15
+                            text: "W/m²"
+                            text_color: 0x8E9FB8
+                            text_align: LEFT
+                            text_font: f_sm
+                        - line:
+                            x: 7
+                            y: 74
+                            width: 216
+                            height: 2
+                            points:
+                              - 0, 0
+                              - 216, 0
+                            line_color: 0x9BC412
+                            line_rounded: true
+
+                  # Eetkamer (rechts midden) — 232×83
+                  - obj:
+                      x: 243
+                      y: 93
+                      width: 232
+                      height: 83
+                      bg_color: 0x070E1B
+                      bg_opa: 95%
+                      border_width: 1
+                      border_color: 0x162038
+                      border_opa: 20%
+                      radius: 16
+                      scrollbar_mode: "OFF"
+                      pad_all: 0
+                      widgets:
+                        - label:
+                            x: 13
+                            y: 7
+                            width: 20
+                            height: 20
+                            text: "\U000F0A70"
+                            text_font: f_mdi_sm
+                            text_align: CENTER
+                            text_color: 0xF59E0B
+                        - label:
+                            x: 120
+                            y: 7
+                            width: 101
+                            height: 16
+                            text: "Eetkamer"
+                            text_color: 0x8E9FB8
+                            text_align: RIGHT
+                            long_mode: CLIP
+                            text_font: f_sm
+                        - label:
+                            id: dinner_temp
+                            x: 9
+                            y: 26
+                            width: 65
+                            height: 30
+                            text: "--.-"
+                            text_color: 0xF1F5F9
+                            text_align: RIGHT
+                            long_mode: CLIP
+                            text_font: f_lg
+                        - label:
+                            x: 74
+                            y: 38
+                            width: 30
+                            height: 15
+                            text: "°C"
+                            text_color: 0x8E9FB8
+                            text_align: LEFT
+                            text_font: f_sm
+                        - label:
+                            id: dinner_humidity
+                            x: 110
+                            y: 26
+                            width: 56
+                            height: 20
+                            text: "--"
+                            text_color: 0xF1F5F9
+                            text_align: RIGHT
+                            long_mode: CLIP
+                            text_font: f_md
+                        - label:
+                            x: 175
+                            y: 33
+                            width: 30
+                            height: 15
+                            text: "%"
+                            text_color: 0x8E9FB8
+                            text_align: LEFT
+                            text_font: f_sm
+                        - label:
+                            id: dinner_co2
+                            x: 110
+                            y: 50
+                            width: 56
+                            height: 20
+                            text: "---"
+                            text_color: 0xF1F5F9
+                            text_align: RIGHT
+                            long_mode: CLIP
+                            text_font: f_md
+                        - label:
+                            x: 175
+                            y: 56
+                            width: 30
+                            height: 15
+                            text: "ppm"
+                            text_color: 0x8E9FB8
+                            text_align: LEFT
+                            text_font: f_sm
+                        - line:
+                            x: 7
+                            y: 74
+                            width: 216
+                            height: 2
+                            points:
+                              - 0, 0
+                              - 216, 0
+                            line_color: 0xF59E0B
+                            line_rounded: true
+
+                  # Woonkamer (rechts onder) — 232×83
+                  - obj:
+                      x: 243
+                      y: 181
+                      width: 232
+                      height: 83
+                      bg_color: 0x070E1B
+                      bg_opa: 95%
+                      border_width: 1
+                      border_color: 0x162038
+                      border_opa: 20%
+                      radius: 16
+                      scrollbar_mode: "OFF"
+                      pad_all: 0
+                      widgets:
+                        - label:
+                            x: 13
+                            y: 7
+                            width: 20
+                            height: 20
+                            text: "\U000F04B9"
+                            text_font: f_mdi_sm
+                            text_align: CENTER
+                            text_color: 0xC412BE
+                        - label:
+                            x: 120
+                            y: 7
+                            width: 101
+                            height: 16
+                            text: "Woonkamer"
+                            text_color: 0x8E9FB8
+                            text_align: RIGHT
+                            long_mode: CLIP
+                            text_font: f_sm
+                        - label:
+                            id: living_temp
+                            x: 9
+                            y: 26
+                            width: 65
+                            height: 30
+                            text: "--.-"
+                            text_color: 0xF1F5F9
+                            text_align: RIGHT
+                            long_mode: CLIP
+                            text_font: f_lg
+                        - label:
+                            x: 74
+                            y: 38
+                            width: 30
+                            height: 15
+                            text: "°C"
+                            text_color: 0x8E9FB8
+                            text_align: LEFT
+                            text_font: f_sm
+                        - label:
+                            id: living_humidity
+                            x: 110
+                            y: 26
+                            width: 56
+                            height: 20
+                            text: "--"
+                            text_color: 0xF1F5F9
+                            text_align: RIGHT
+                            long_mode: CLIP
+                            text_font: f_md
+                        - label:
+                            x: 175
+                            y: 33
+                            width: 30
+                            height: 15
+                            text: "%"
+                            text_color: 0x8E9FB8
+                            text_align: LEFT
+                            text_font: f_sm
+                        - label:
+                            id: living_co2
+                            x: 110
+                            y: 50
+                            width: 56
+                            height: 20
+                            text: "---"
+                            text_color: 0xF1F5F9
+                            text_align: RIGHT
+                            long_mode: CLIP
+                            text_font: f_md
+                        - label:
+                            x: 175
+                            y: 56
+                            width: 30
+                            height: 15
+                            text: "ppm"
+                            text_color: 0x8E9FB8
+                            text_align: LEFT
+                            text_font: f_sm
+                        - line:
+                            x: 7
+                            y: 74
+                            width: 216
+                            height: 2
+                            points:
+                              - 0, 0
+                              - 216, 0
+                            line_color: 0xC412BE
+                            line_rounded: true
+
+              # ============ Tab: Energy ============
+              - name: "\U000F140B"
+                pad_top: 0
+                pad_right: 0
+                pad_bottom: 0
+                pad_left: 0
+                widgets:
+                  # Rij 1: ZON + NET
+                  - obj:
+                      styles: style_card
+                      align: TOP_LEFT
+                      x: 8
+                      y: 2
+                      width: 228
+                      height: 68
+                      widgets:
+                        - label:
+                            text: ZON
+                            align: TOP_LEFT
+                            text_font: f_sm
+                            text_color: col_yellow
+                        - label:
+                            id: lbl_e_solar_w
+                            text: "-- W"
+                            align: CENTER
+                            text_font: f_lg
+                            text_color: col_yellow
+                        - label:
+                            id: lbl_e_solar_kwh
+                            text: "-.-- kWh"
+                            align: BOTTOM_RIGHT
+                            text_font: f_sm
+                            text_color: col_text2
+                  - obj:
+                      styles: style_card
+                      align: TOP_LEFT
+                      x: 244
+                      y: 2
+                      width: 228
+                      height: 68
+                      widgets:
+                        - label:
+                            text: NET
+                            align: TOP_LEFT
+                            text_font: f_sm
+                            text_color: col_blue
+                        - label:
+                            id: lbl_e_grid_w
+                            text: "-- W"
+                            align: CENTER
+                            text_font: f_lg
+                            text_color: col_blue
+                  # Rij 2: HUIS + BAT
+                  - obj:
+                      styles: style_card
+                      align: TOP_LEFT
+                      x: 8
+                      y: 78
+                      width: 228
+                      height: 68
+                      widgets:
+                        - label:
+                            text: HUIS
+                            align: TOP_LEFT
+                            text_font: f_sm
+                            text_color: col_text2
+                        - label:
+                            id: lbl_e_house_w
+                            text: "-- W"
+                            align: CENTER
+                            text_font: f_lg
+                            text_color: col_text
+                  - obj:
+                      styles: style_card
+                      align: TOP_LEFT
+                      x: 244
+                      y: 78
+                      width: 228
+                      height: 68
+                      widgets:
+                        - label:
+                            text: BAT
+                            align: TOP_LEFT
+                            text_font: f_sm
+                            text_color: col_green
+                        - label:
+                            id: lbl_e_bat_w
+                            text: "-- W"
+                            align: CENTER
+                            text_font: f_lg
+                            text_color: col_green
+                        - label:
+                            id: lbl_e_bat_soc
+                            text: "SOC: --%"
+                            align: BOTTOM_RIGHT
+                            text_font: f_sm
+                            text_color: col_text2
+                  # Rij 3: GAS + WATER
+                  - obj:
+                      styles: style_card
+                      align: TOP_LEFT
+                      x: 8
+                      y: 154
+                      width: 228
+                      height: 68
+                      widgets:
+                        - label:
+                            text: GAS
+                            align: TOP_LEFT
+                            text_font: f_sm
+                            text_color: col_orange
+                        - label:
+                            id: lbl_e_gas
+                            text: "-- m3"
+                            align: CENTER
+                            text_font: f_lg
+                            text_color: col_orange
+                  - obj:
+                      styles: style_card
+                      align: TOP_LEFT
+                      x: 244
+                      y: 154
+                      width: 228
+                      height: 68
+                      widgets:
+                        - label:
+                            text: WATER
+                            align: TOP_LEFT
+                            text_font: f_sm
+                            text_color: col_teal
+                        - label:
+                            id: lbl_e_water
+                            text: "-- L"
+                            align: CENTER
+                            text_font: f_lg
+                            text_color: col_teal
+
+              # ============ Tab: Settings ============
+              - name: "\U000F0493"
+                pad_top: 0
+                pad_right: 0
+                pad_bottom: 0
+                pad_left: 0
+                widgets:
+                  - label:
+                      id: lbl_admin_info
+                      align: TOP_LEFT
+                      x: 12
+                      y: 4
+                      text_font: f_sm
+                      text_color: col_text2
+                      text: "ip / wifi info"
+                  - label:
+                      id: lbl_ldr
+                      align: TOP_LEFT
+                      x: 12
+                      y: 42
+                      text_font: f_sm
+                      text_color: col_text2
+                      text: "LDR: -.-- V"
+                  - obj:
+                      styles: style_card
+                      align: TOP_LEFT
+                      x: 8
+                      y: 70
+                      width: 464
+                      height: 72
+                      widgets:
+                        - label:
+                            text: Backlight
+                            align: TOP_LEFT
+                            text_font: f_sm
+                            text_color: col_text2
+                        - label:
+                            id: lbl_backlight_pct
+                            text: "100%"
+                            align: TOP_RIGHT
+                            text_font: f_sm
+                            text_color: col_text
+                        - slider:
+                            id: sl_backlight
+                            align: BOTTOM_MID
+                            width: 440
+                            height: 20
+                            min_value: 10
+                            max_value: 100
+                            value: 100
+                            on_value:
+                              - number.set:
+                                  id: backlight_pct
+                                  value: !lambda 'return (float)x;'
+                  - button:
+                      styles: style_btn
+                      align: TOP_LEFT
+                      x: 8
+                      y: 150
+                      width: 130
+                      height: 50
+                      on_click:
+                        - light.toggle:
+                            id: status_led
+                      widgets:
+                        - label:
+                            text: "LED toggle"
+                            align: CENTER
+                            text_font: f_sm
+                  - button:
+                      styles: style_btn
+                      align: TOP_LEFT
+                      x: 150
+                      y: 150
+                      width: 130
+                      height: 50
+                      on_click:
+                        - button.press: btn_restart
+                      widgets:
+                        - label:
+                            text: Restart
+                            align: CENTER
+                            text_color: col_red

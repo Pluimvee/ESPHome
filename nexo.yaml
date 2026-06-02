@@ -1,0 +1,531 @@
+# Copyright (c) 2026 Pluimvee
+# Smart Thermostat front-end UI - Sunton ESP32-3248S035R (CYD 3.5")
+# ESP32 + ILI9488 480x320 + XPT2046 resistive touch + SD-card slot
+
+# First some basic configuration
+#--------------------------------------------
+substitutions:
+  device_id: nexo
+  device_name: Nexo
+  build_root: !secret build_root
+
+esphome:
+  name: ${device_id}
+  friendly_name: ${device_name}
+  comment: Nexo - touchscreen front-end (Sunton ESP32-3248S035R, ILI9488 + XPT2046)
+  build_path: ${build_root}/${device_id}
+  project:
+    name: "EcoGrid.Nexo"
+    version: ${version}
+  on_boot:
+    priority: -100
+    then:
+      - logger.log: "Nexo UI booted"
+      - lambda: 'id(last_touch_ms) = millis();'
+      - output.set_level:
+          id: tft_bl_pwm
+          level: 1.0
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+    sdkconfig_options:
+      CONFIG_FATFS_LFN_HEAP: "y"
+
+preferences:
+  flash_write_interval: never
+
+globals:
+  - id: last_touch_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+
+logger:
+  level: INFO
+  baud_rate: 0
+
+api:
+  encryption:
+    key: !secret api_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "Nexo Fallback"
+    password: !secret wifi_ap_password
+
+captive_portal:
+
+packages:
+  version: !include version.yaml
+  lvgl_ui: !include nexo_lvgl.yaml
+
+web_server:
+  port: 80
+  version: 3
+
+time:
+  - platform: homeassistant
+    id: time_id
+
+# -----------------------------------------------------------
+# Hardware buses - TFT en touch delen HSPI op de Sunton 3248S035R
+# -----------------------------------------------------------
+spi:
+  - id: spi_main
+    clk_pin: GPIO14
+    mosi_pin: GPIO13
+    miso_pin: GPIO12
+
+# -----------------------------------------------------------
+# Outputs - backlight + RGB status LED
+# RGB LED is common-anode (active-low) op Sunton CYDs -> inverted: true
+# -----------------------------------------------------------
+output:
+  - platform: ledc
+    id: tft_bl_pwm
+    pin: GPIO27
+    frequency: 1000 Hz
+  - platform: ledc
+    id: led_r
+    pin: GPIO4
+    frequency: 1000 Hz
+    inverted: true
+  - platform: ledc
+    id: led_g
+    pin: GPIO16
+    frequency: 1000 Hz
+    inverted: true
+  - platform: ledc
+    id: led_b
+    pin: GPIO17
+    frequency: 1000 Hz
+    inverted: true
+
+light:
+  - platform: rgb
+    id: status_led
+    name: "${device_name} Status LED"
+    red: led_r
+    green: led_g
+    blue: led_b
+    restore_mode: ALWAYS_OFF
+
+# -----------------------------------------------------------
+# Display - ILI9488 480x320 op 40MHz HSPI, 180-graden gedraaid
+# zodat de RGB LED rechtsboven en de LDR rechtsonder uitkomen.
+# -----------------------------------------------------------
+display:
+  - platform: mipi_spi
+    id: tft
+    model: ILI9488_A
+    spi_id: spi_main
+    cs_pin: GPIO15
+    dc_pin: GPIO2
+    # reset_pin: niet zetten - GPIO4 is RGB LED rood; reset is hardwired
+    dimensions:
+      width: 480
+      height: 320
+    transform:
+      swap_xy: true
+      mirror_x: true        # 180-graden rotatie
+      mirror_y: true
+    invert_colors: false
+    data_rate: 40MHz
+    auto_clear_enabled: false
+    update_interval: never
+
+# -----------------------------------------------------------
+# Touch - XPT2046 op gedeelde HSPI, transform 180 graden meegedraaid
+# -----------------------------------------------------------
+touchscreen:
+  - platform: xpt2046
+    id: touch
+    spi_id: spi_main
+    cs_pin: GPIO33
+    update_interval: 50ms
+    calibration:
+      x_min: 280
+      x_max: 3860
+      y_min: 340
+      y_max: 3860
+    transform:
+      swap_xy: true
+      mirror_x: false       # was true bij niet-gedraaide display
+      mirror_y: true        # was false
+    on_touch:
+      - lambda: 'id(last_touch_ms) = millis();'
+      - output.set_level:
+          id: tft_bl_pwm
+          level: 1.0
+
+# -----------------------------------------------------------
+# Sensors - WiFi signaal + ambient light (LDR op GPIO34, input-only ADC)
+# -----------------------------------------------------------
+sensor:
+  - platform: wifi_signal
+    name: "WiFi Signal"
+    id: wifi_signal_db
+    update_interval: 60s
+
+  - platform: adc
+    pin: GPIO34
+    name: "Ambient Light"
+    id: ldr_value
+    attenuation: auto
+    update_interval: 2s
+    accuracy_decimals: 2
+    unit_of_measurement: V
+    on_value:
+      - lvgl.label.update:
+          id: lbl_ldr
+          text: !lambda |-
+            char b[32];
+            if (isnan(x)) return std::string("LDR: -- V");
+            snprintf(b, sizeof(b), "LDR: %.2f V", x);
+            return std::string(b);
+
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      id: wifi_ip
+
+  - platform: homeassistant
+    id: light_mode_state
+    entity_id: input_select.light_mode
+    on_value:
+      - lambda: |-
+          auto s = [](lv_obj_t* btn, bool active) {
+            lv_obj_t* lbl = lv_obj_get_child(btn, 0);
+            if (active) {
+              lv_obj_set_style_border_side(btn, LV_BORDER_SIDE_BOTTOM, LV_PART_MAIN);
+              lv_obj_set_style_border_width(btn, 3, LV_PART_MAIN);
+              lv_obj_set_style_border_color(btn, lv_color_hex(0x4FC3F7), LV_PART_MAIN);
+              if (lbl) lv_obj_set_style_text_color(lbl, lv_color_hex(0x4FC3F7), LV_PART_MAIN);
+            } else {
+              lv_obj_set_style_border_width(btn, 0, LV_PART_MAIN);
+              if (lbl) lv_obj_set_style_text_color(lbl, lv_color_hex(0x9AA0A6), LV_PART_MAIN);
+            }
+          };
+          s(id(btn_l_morning),  x == "Morning");
+          s(id(btn_l_arriving), x == "Arriving");
+          s(id(btn_l_dusk),     x == "Dusk");
+          s(id(btn_l_evening),  x == "Evening");
+          s(id(btn_l_dinner),   x == "Dinner");
+          s(id(btn_l_full),     x == "Full");
+          s(id(btn_l_fun),      x == "Fun");
+          s(id(btn_l_off),      x == "Off");
+
+  - platform: homeassistant
+    id: c_eetkamer_t
+    entity_id: sensor.resideo_eetkamer_temperature
+    on_value:
+      - lvgl.label.update:
+          id: dinner_temp
+          text: !lambda |-
+            char b[8]; snprintf(b, sizeof(b), "%.1f", atof(x.c_str())); return std::string(b);
+
+  - platform: homeassistant
+    id: c_eetkamer_co2
+    entity_id: sensor.resideo_eetkamer_carbon_dioxide
+    on_value:
+      - lvgl.label.update:
+          id: dinner_co2
+          text: !lambda |-
+            char b[8]; snprintf(b, sizeof(b), "%.0f", atof(x.c_str())); return std::string(b);
+
+  - platform: homeassistant
+    id: c_eetkamer_h
+    entity_id: sensor.resideo_eetkamer_humidity
+    on_value:
+      - lvgl.label.update:
+          id: dinner_humidity
+          text: !lambda |-
+            char b[8]; snprintf(b, sizeof(b), "%.0f", atof(x.c_str())); return std::string(b);
+
+  - platform: homeassistant
+    id: c_woonkamer_t
+    entity_id: sensor.resideo_woonkamer_temperature
+    on_value:
+      - lvgl.label.update:
+          id: living_temp
+          text: !lambda |-
+            char b[8]; snprintf(b, sizeof(b), "%.1f", atof(x.c_str())); return std::string(b);
+
+  - platform: homeassistant
+    id: c_woonkamer_co2
+    entity_id: sensor.resideo_woonkamer_carbon_dioxide
+    on_value:
+      - lvgl.label.update:
+          id: living_co2
+          text: !lambda |-
+            char b[8]; snprintf(b, sizeof(b), "%.0f", atof(x.c_str())); return std::string(b);
+
+  - platform: homeassistant
+    id: c_woonkamer_h
+    entity_id: sensor.resideo_woonkamer_humidity
+    on_value:
+      - lvgl.label.update:
+          id: living_humidity
+          text: !lambda |-
+            char b[8]; snprintf(b, sizeof(b), "%.0f", atof(x.c_str())); return std::string(b);
+
+  - platform: homeassistant
+    id: c_keuken_t
+    entity_id: sensor.smartcontrol_inside
+    on_value:
+      - lvgl.arc.update:
+          id: hvac_Troom
+          value: !lambda 'return (int)atof(x.c_str());'
+      - lvgl.label.update:
+          id: hvac_Troom_text
+          text: !lambda |-
+            char b[8]; snprintf(b, sizeof(b), "%.1f", atof(x.c_str())); return std::string(b);
+
+  - platform: homeassistant
+    id: c_keuken_set
+    entity_id: number.smartcontrol_target
+    on_value:
+      - lvgl.arc.update:
+          id: hvac_TroomSet
+          value: !lambda 'return (int)atof(x.c_str());'
+
+  - platform: homeassistant
+    id: c_hvac_tinlet
+    entity_id: sensor.smartcontrol_inlet
+    on_value:
+      - lvgl.arc.update:
+          id: hvac_Tinlet
+          value: !lambda 'return (int)atof(x.c_str());'
+
+  - platform: homeassistant
+    id: c_hvac_tset
+    entity_id: sensor.smartcontrol_setpoint
+    on_value:
+      - lvgl.arc.update:
+          id: hvac_TSet
+          value: !lambda 'return (int)atof(x.c_str());'
+      - lvgl.label.update:
+          id: hvac_Tset_text
+          text: !lambda |-
+            char b[8]; snprintf(b, sizeof(b), "%.1f", atof(x.c_str())); return std::string(b);
+
+  - platform: homeassistant
+    id: c_hvac_toutlet
+    entity_id: sensor.smartcontrol_outlet
+    on_value:
+      - lvgl.arc.update:
+          id: hvac_Toutlet
+          value: !lambda 'return (int)atof(x.c_str());'
+
+  - platform: homeassistant
+    id: s_hvac_heating
+    entity_id: binary_sensor.smartcontrol_ch_mode
+    on_value:
+      - lambda: |-
+          lv_obj_set_style_text_color(id(hvac_heating),
+            x == "on" ? lv_color_hex(0xFF6B35) : lv_color_hex(0x444444), LV_PART_MAIN);
+
+  - platform: homeassistant
+    id: s_hvac_cooling
+    entity_id: binary_sensor.smartcontrol_cooling
+    on_value:
+      - lambda: |-
+          lv_obj_set_style_text_color(id(hvac_cooling),
+            x == "on" ? lv_color_hex(0x42A5F5) : lv_color_hex(0x444444), LV_PART_MAIN);
+
+  - platform: homeassistant
+    id: c_buiten_t
+    entity_id: sensor.smartcontrol_outside
+    on_value:
+      - lvgl.label.update:
+          id: outside_temp
+          text: !lambda |-
+            char b[8]; snprintf(b, sizeof(b), "%.1f", atof(x.c_str())); return std::string(b);
+
+  - platform: homeassistant
+    id: e_solar_w
+    entity_id: sensor.pv_total_power
+    on_value:
+      - lvgl.label.update:
+          id: lbl_e_solar_w
+          text: !lambda |-
+            char b[16];
+            snprintf(b, sizeof(b), "%.0f W", atof(x.c_str()));
+            return std::string(b);
+      - lvgl.label.update:
+          id: irradiation
+          text: !lambda |-
+            char b[8];
+            snprintf(b, sizeof(b), "%.0f", atof(x.c_str()));
+            return std::string(b);
+
+  - platform: homeassistant
+    id: e_solar_kwh
+    entity_id: sensor.pv_total_energy
+    on_value:
+      - lvgl.label.update:
+          id: lbl_e_solar_kwh
+          text: !lambda |-
+            char b[16];
+            snprintf(b, sizeof(b), "%.2f kWh", atof(x.c_str()));
+            return std::string(b);
+
+  - platform: homeassistant
+    id: e_grid_w
+    entity_id: sensor.p1_reader_power
+    on_value:
+      - lvgl.label.update:
+          id: lbl_e_grid_w
+          text: !lambda |-
+            char b[16];
+            float v = atof(x.c_str());
+            if (v >= 0) snprintf(b, sizeof(b), "<- %.0f W", v);
+            else snprintf(b, sizeof(b), "-> %.0f W", -v);
+            return std::string(b);
+
+  - platform: homeassistant
+    id: e_house_w
+    entity_id: sensor.p1_reader_household_total_power
+    on_value:
+      - lvgl.label.update:
+          id: lbl_e_house_w
+          text: !lambda |-
+            char b[16];
+            snprintf(b, sizeof(b), "%.0f W", atof(x.c_str()));
+            return std::string(b);
+
+  - platform: homeassistant
+    id: e_bat_w
+    entity_id: sensor.solis_s6_eh3p_ac_grid_port_power
+    on_value:
+      - lvgl.label.update:
+          id: lbl_e_bat_w
+          text: !lambda |-
+            if (x == "unavailable" || x == "unknown") return std::string("-- W");
+            char b[16];
+            snprintf(b, sizeof(b), "%.0f W", atof(x.c_str()));
+            return std::string(b);
+
+  - platform: homeassistant
+    id: e_bat_soc
+    entity_id: sensor.solis_s6_eh3p_battery_soc
+    on_value:
+      - lvgl.label.update:
+          id: lbl_e_bat_soc
+          text: !lambda |-
+            if (x == "unavailable" || x == "unknown") return std::string("SOC: --%");
+            char b[16];
+            snprintf(b, sizeof(b), "SOC: %.0f%%", atof(x.c_str()));
+            return std::string(b);
+
+  - platform: homeassistant
+    id: e_gas_today
+    entity_id: sensor.zonneplan_gas_consumption_today
+    on_value:
+      - lvgl.label.update:
+          id: lbl_e_gas
+          text: !lambda |-
+            if (x == "unavailable" || x == "unknown") return std::string("-- m3");
+            char b[16];
+            snprintf(b, sizeof(b), "%.2f m3", atof(x.c_str()));
+            return std::string(b);
+
+  - platform: homeassistant
+    id: e_water_today
+    entity_id: sensor.water_meter_today
+    on_value:
+      - lvgl.label.update:
+          id: lbl_e_water
+          text: !lambda |-
+            char b[16];
+            snprintf(b, sizeof(b), "%.0f L", atof(x.c_str()));
+            return std::string(b);
+
+number:
+  - platform: template
+    id: backlight_pct
+    name: "${device_name} Backlight"
+    min_value: 10
+    max_value: 100
+    step: 10
+    initial_value: 100
+    restore_value: true
+    optimistic: true
+    on_value:
+      - output.set_level:
+          id: tft_bl_pwm
+          level: !lambda 'return x / 100.0f;'
+      - lvgl.label.update:
+          id: lbl_backlight_pct
+          text: !lambda |-
+            char b[8];
+            snprintf(b, sizeof(b), "%d%%", (int)x);
+            return std::string(b);
+
+  - platform: template
+    id: target_temp
+    name: "Thermostaat Target"
+    min_value: 16
+    max_value: 25
+    step: 0.5
+    initial_value: 21
+    restore_value: true
+    optimistic: true
+
+button:
+  - platform: restart
+    id: btn_restart
+    name: "${device_name} Restart"
+
+# -----------------------------------------------------------
+# Periodieke UI updates
+# -----------------------------------------------------------
+interval:
+  - interval: 1s
+    then:
+      - if:
+          condition:
+            lambda: 'return id(time_id).now().is_valid();'
+          then:
+            - lvgl.label.update:
+                id: clock_label
+                text: !lambda |-
+                  char b[8];
+                  id(time_id).now().strftime(b, sizeof(b), "%H:%M");
+                  return std::string(b);
+            - lvgl.label.update:
+                id: date_label
+                text: !lambda |-
+                  char b[24];
+                  id(time_id).now().strftime(b, sizeof(b), "%a %d %b");
+                  return std::string(b);
+      - lambda: |-
+          if (millis() - id(last_touch_ms) > 10000) {
+            id(tft_bl_pwm).set_level(id(backlight_pct).state / 100.0f);
+          }
+  - interval: 3s
+    then:
+      - lvgl.label.update:
+          id: lbl_admin_info
+          text: !lambda |-
+            char b[80];
+            snprintf(b, sizeof(b), "IP: %s\nWiFi: %d dBm",
+                     id(wifi_ip).state.c_str(),
+                     (int) id(wifi_signal_db).state);
+            return std::string(b);
+      - lvgl.label.update:
+          id: lbl_ldr
+          text: !lambda |-
+            char b[32];
+            float v = id(ldr_value).state;
+            if (isnan(v)) return std::string("LDR: -- V");
+            snprintf(b, sizeof(b), "LDR: %.2f V", v);
+            return std::string(b);

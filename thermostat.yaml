@@ -1,23 +1,27 @@
+# Copyright (c) 2026 Pluimvee
+# Smart Thermostat – ESP32 WROOM + SSD1315 128×64 OLED (I²C) + 4 knoppen
+# Regellogica (verwarmingscurve, antipendel) in native ESPHome YAML.
+
 substitutions:
   device_id: thermostat
   device_name: Thermostat
   build_root: !secret build_root
 
+packages:
+  version: !include version.yaml
+
 esphome:
   name: ${device_id}
   friendly_name: ${device_name}
-  comment: Thermostat migration from Arduino to ESPHome with custom thermo control
-  build_path: ${build_root}/${device_id}
+  comment: Thermostaat ESP32 – OpenTherm + OLED 128×64 LVGL + 4 knoppen
+  project:
+    name: 'EcoGrid.Thermostat'
+    version: ${version}
 
 esp32:
   board: esp32dev
   framework:
     type: arduino
-
-external_components:
-  - source:
-      type: local
-      path: components
 
 logger:
   level: DEBUG
@@ -25,6 +29,20 @@ logger:
 api:
   encryption:
     key: !secret api_key
+  on_client_connected:
+    - lvgl.label.update:
+        id: lbl_ha_status
+        text: "H+"
+    - lvgl.label.update:
+        id: lbl_status_ha
+        text: "verbonden"
+  on_client_disconnected:
+    - lvgl.label.update:
+        id: lbl_ha_status
+        text: "H-"
+    - lvgl.label.update:
+        id: lbl_status_ha
+        text: "offline"
 
 ota:
   - platform: esphome
@@ -36,6 +54,20 @@ wifi:
   ap:
     ssid: Thermostat Fallback
     password: !secret wifi_ap_password
+  on_connect:
+    - lvgl.label.update:
+        id: lbl_wifi_status
+        text: "W+"
+    - lvgl.label.update:
+        id: lbl_status_wifi
+        text: "verbonden"
+  on_disconnect:
+    - lvgl.label.update:
+        id: lbl_wifi_status
+        text: "W-"
+    - lvgl.label.update:
+        id: lbl_status_wifi
+        text: "offline"
 
 captive_portal:
 
@@ -46,9 +78,11 @@ time:
 preferences:
   flash_write_interval: 60s
 
-spi:
-  clk_pin: GPIO18
-  mosi_pin: GPIO23
+# ── Hardware ────────────────────────────────────────────────────────────────
+i2c:
+  sda: GPIO21
+  scl: GPIO22
+  scan: false   # zet op true bij eerste boot om I²C-adres te zoeken
 
 one_wire:
   - platform: gpio
@@ -60,30 +94,368 @@ opentherm:
   out_pin: GPIO16
   sync_mode: true
 
+# ── Fonts voor LVGL (bpp:1 = geen anti-aliasing, ideaal voor monochrome OLED) ──
+font:
+  - file: "gfonts://Roboto"
+    id: font_s        # 8 pt – labels, statusbalk, header
+    size: 8
+    bpp: 1
+    glyphs: " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~°%+"
+  - file: "gfonts://Roboto"
+    id: font_m        # 12 pt – temperatuurwaarden op overzichtscherm
+    size: 12
+    bpp: 1
+    glyphs: " 0123456789.-°C%nNaA/"
+  - file: "gfonts://Roboto"
+    id: font_l        # 18 pt – grote doeltemperatuur op instelscherm
+    size: 18
+    bpp: 1
+    glyphs: " 0123456789.-°C"
+
+# ── Globals ──────────────────────────────────────────────────────────────────
+globals:
+  # Schakelstatus verwarmingssysteem
+  - id: ch_enabled_g
+    type: bool
+    restore_value: false
+    initial_value: "false"
+  - id: cooling_enabled_g
+    type: bool
+    restore_value: false
+    initial_value: "false"
+  # Antipendel – tijdstip laatste schakelactie (ms)
+  - id: last_switch_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+  # Setpunttrend: verschil t.o.v. vorige cyclus (voor schakellogica)
+  - id: setpoint_prev
+    type: float
+    restore_value: false
+    initial_value: "NAN"
+  - id: setpoint_trend_g
+    type: float
+    restore_value: false
+    initial_value: "0.0"
+  # Scherm-timeout
+  - id: last_interaction
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+
+# ── Display (raw driver – LVGL beheert rendering) ────────────────────────────
+display:
+  - platform: ssd1306_i2c
+    model: "SSD1306 128x64"
+    address: 0x3C
+    id: thermostat_display
+    update_interval: never
+
+# ── LVGL – 4 pagina's ────────────────────────────────────────────────────────
+lvgl:
+  displays:
+    - thermostat_display
+  default_font: font_s
+
+  pages:
+    # ══════════════════════════════════════════════════════════════════════════
+    # Pagina 0 — Home / overzicht  (standaard na 30 s timeout)
+    # Gele zone hardware = y 0–15; blauwe zone = y 16–63
+    # ══════════════════════════════════════════════════════════════════════════
+    - id: page_home
+      widgets:
+        # Statusbalk (geel)
+        - label:
+            id: lbl_time
+            x: 0
+            y: 4
+            text: "--:--"
+        - label:
+            id: lbl_wifi_status
+            x: 55
+            y: 4
+            text: "W?"
+        - label:
+            id: lbl_ha_status
+            x: 75
+            y: 4
+            text: "H?"
+        - label:
+            id: lbl_ot_fault
+            x: 92
+            y: 4
+            text: "OT"
+        - label:
+            id: lbl_flame
+            x: 113
+            y: 4
+            text: "-"
+        # Ruimtetemperaturen (blauw, y 16–40)
+        - label:
+            x: 0
+            y: 17
+            text: "Buiten"
+        - label:
+            x: 45
+            y: 17
+            text: "Kamer"
+        - label:
+            x: 90
+            y: 17
+            text: "Doel"
+        - label:
+            id: lbl_outside
+            x: 0
+            y: 27
+            text: "n/a"
+            text_font: font_m
+        - label:
+            id: lbl_room
+            x: 43
+            y: 27
+            text: "n/a"
+            text_font: font_m
+        - label:
+            id: lbl_target_home
+            x: 86
+            y: 27
+            text: "n/a"
+            text_font: font_m
+        # Watertemperaturen (blauw, y 41–63)
+        - label:
+            x: 0
+            y: 42
+            text: "Aanvoer"
+        - label:
+            x: 65
+            y: 42
+            text: "Retour"
+        - label:
+            id: lbl_setpoint
+            x: 0
+            y: 52
+            text: "n/a"
+            text_font: font_m
+        - label:
+            id: lbl_inlet
+            x: 65
+            y: 52
+            text: "n/a"
+            text_font: font_m
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # Pagina 1 — Doeltemperatuur instellen  (UP/DOWN actief)
+    # ══════════════════════════════════════════════════════════════════════════
+    - id: page_target
+      widgets:
+        - label:
+            x: 5
+            y: 4
+            text: "< Doel Temperatuur >"
+        - label:
+            x: 48
+            y: 20
+            text: "[ + UP ]"
+        - label:
+            id: lbl_target_large
+            x: 22
+            y: 33
+            text: "--.-"
+            text_font: font_l
+        - label:
+            x: 45
+            y: 54
+            text: "[ - DOWN ]"
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # Pagina 2 — Keteldetails
+    # ══════════════════════════════════════════════════════════════════════════
+    - id: page_boiler
+      widgets:
+        - label:
+            x: 15
+            y: 4
+            text: "< Ketel Details >"
+        - label:
+            x: 0
+            y: 17
+            text: "Aanvoer"
+        - label:
+            id: lbl_boiler_setpoint
+            x: 0
+            y: 27
+            text: "n/a"
+            text_font: font_m
+        - label:
+            x: 65
+            y: 17
+            text: "Retour"
+        - label:
+            id: lbl_boiler_inlet
+            x: 65
+            y: 27
+            text: "n/a"
+            text_font: font_m
+        - label:
+            x: 0
+            y: 42
+            text: "Uitvoer"
+        - label:
+            id: lbl_boiler_outlet
+            x: 0
+            y: 52
+            text: "n/a"
+            text_font: font_m
+        - label:
+            x: 65
+            y: 42
+            text: "Modulatie"
+        - label:
+            id: lbl_boiler_mod
+            x: 65
+            y: 52
+            text: "n/a"
+            text_font: font_m
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # Pagina 3 — Verbindingsstatus
+    # ══════════════════════════════════════════════════════════════════════════
+    - id: page_status
+      widgets:
+        - label:
+            x: 30
+            y: 4
+            text: "< Status >"
+        - label:
+            x: 0
+            y: 17
+            text: "WiFi:"
+        - label:
+            id: lbl_status_wifi
+            x: 40
+            y: 17
+            text: "?"
+        - label:
+            x: 0
+            y: 27
+            text: "HA:"
+        - label:
+            id: lbl_status_ha
+            x: 40
+            y: 27
+            text: "?"
+        - label:
+            x: 0
+            y: 37
+            text: "OT fout:"
+        - label:
+            id: lbl_status_ot
+            x: 52
+            y: 37
+            text: "?"
+        - label:
+            x: 0
+            y: 47
+            text: "Verwarming:"
+        - label:
+            id: lbl_status_ch
+            x: 72
+            y: 47
+            text: "?"
+        - label:
+            x: 0
+            y: 57
+            text: "Koeling:"
+        - label:
+            id: lbl_status_cool
+            x: 52
+            y: 57
+            text: "?"
+
+# ── Sensors ──────────────────────────────────────────────────────────────────
 sensor:
+  # Ruimtetemperatuur – DS18B20 (gang)
   - platform: dallas_temp
     one_wire_id: onewire_bus
     index: 0
-    name: Room Temperature Raw
-    id: ds18_room_raw
-    internal: true
+    name: Room Temperature
+    id: st_room_temp
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
     update_interval: 10s
     filters:
       - offset: -1.3
+      - sliding_window_moving_average:
+          window_size: 3
+          send_every: 1
+          send_first_at: 1
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: lbl_room
+            text:
+              format: "%.1f°"
+              args: [x]
+        # OT: stuur huidige kamertemperatuur naar ketel (0..40 → 0..1)
+        - output.set_level:
+            id: ot_t_room_output
+            level: !lambda "return isnan(x) ? 0.0f : x / 40.0f;"
 
+  # OpenTherm ruwe meetwaarden
   - platform: opentherm
     t_outside:
-      name: OT Outside Raw
-      id: ot_outside_raw
-      internal: true
+      name: Outside Temperature
+      id: st_outside_temp
+      unit_of_measurement: "°C"
+      device_class: temperature
+      state_class: measurement
+      filters:
+        - sliding_window_moving_average:
+            window_size: 3
+            send_every: 1
+      on_value:
+        then:
+          - lvgl.label.update:
+              id: lbl_outside
+              text:
+                format: "%.1f°"
+                args: [x]
     t_ret:
-      name: OT Return Raw
-      id: ot_return_raw
-      internal: true
+      name: Inlet Temperature
+      id: st_inlet_temp
+      unit_of_measurement: "°C"
+      device_class: temperature
+      state_class: measurement
+      filters:
+        - sliding_window_moving_average:
+            window_size: 3
+            send_every: 1
+      on_value:
+        then:
+          - lvgl.label.update:
+              id: lbl_inlet
+              text:
+                format: "%.1f°"
+                args: [x]
+          - lvgl.label.update:
+              id: lbl_boiler_inlet
+              text:
+                format: "%.1f°"
+                args: [x]
     t_boiler:
-      name: OT Boiler Raw
-      id: ot_boiler_raw
-      internal: true
+      name: Outlet Temperature
+      id: st_outlet_temp
+      unit_of_measurement: "°C"
+      device_class: temperature
+      state_class: measurement
+      on_value:
+        then:
+          - lvgl.label.update:
+              id: lbl_boiler_outlet
+              text:
+                format: "%.1f°"
+                args: [x]
     rel_mod_level:
       name: Modulation Level
       id: ot_modulation
@@ -91,7 +463,11 @@ sensor:
       state_class: measurement
       on_value:
         then:
-          - component.update: thermostat_display
+          - lvgl.label.update:
+              id: lbl_boiler_mod
+              text:
+                format: "%.0f%%"
+                args: [x]
     ch_pressure:
       name: CH Pressure
       id: ot_pressure
@@ -99,103 +475,222 @@ sensor:
       device_class: pressure
       state_class: measurement
 
-  - platform: template
-    name: Room Temperature
-    id: st_room_temp
-    unit_of_measurement: "C"
-    device_class: temperature
-    state_class: measurement
-    lambda: return id(thermo_control_component).inside_temperature();
-    update_interval: 10s
-    on_value:
-      then:
-        - component.update: thermostat_display
-
-  - platform: template
-    name: Outside Temperature
-    id: st_outside_temp
-    unit_of_measurement: "C"
-    device_class: temperature
-    state_class: measurement
-    lambda: return id(thermo_control_component).outside_temperature();
-    update_interval: 10s
-    on_value:
-      then:
-        - component.update: thermostat_display
-
-  - platform: template
-    name: Inlet Temperature
-    id: st_inlet_temp
-    unit_of_measurement: "C"
-    device_class: temperature
-    state_class: measurement
-    lambda: return id(thermo_control_component).inlet_temperature();
-    update_interval: 10s
-    on_value:
-      then:
-        - component.update: thermostat_display
-
-  - platform: template
-    name: Outlet Temperature
-    id: st_outlet_temp
-    unit_of_measurement: "C"
-    device_class: temperature
-    state_class: measurement
-    lambda: return id(thermo_control_component).outlet_temperature();
-    update_interval: 10s
-    on_value:
-      then:
-        - component.update: thermostat_display
-
+  # Berekend aanvoerwater setpoint (verwarmingscurve uit HeatingCurve.cpp)
+  #
+  # Setpoint = target + factor * curve
+  #   factor  = clamp(factorA + factorB * delta_inside, 0, W55=1.175)
+  #   curve   = delta_outside  (of kwadratisch indien factorC > 0)
+  #   delta_outside = target - outside
+  #   delta_inside  = target - inside
+  #
   - platform: template
     name: Water Setpoint
     id: st_setpoint_temp
-    unit_of_measurement: "C"
+    unit_of_measurement: "°C"
     device_class: temperature
     state_class: measurement
-    lambda: return id(thermo_control_component).setpoint_temperature();
     update_interval: 10s
+    lambda: |-
+      float inside  = id(st_room_temp).state;
+      float outside = id(st_outside_temp).state;
+      float target  = id(target_temp_number).state;
+
+      if (isnan(inside) || isnan(outside) || isnan(target))
+        return NAN;
+
+      float factorA = id(factor_a_number).state;
+      float factorB = id(factor_b_number).state;
+      float factorC = id(factor_c_number).state;
+
+      float delta_outside = target - outside;
+      float delta_inside  = target - inside;
+
+      // Factor berekening (zie HeatingCurve::calculate)
+      float factor = factorB * delta_inside;
+      if (delta_outside < 0.0f) factor *= -1.0f;
+      if (factor < 0.0f) factor = 0.0f;
+      factor += factorA;
+      if (factor > 1.175f) factor = 1.175f;   // W55 stooklijn maximum
+
+      // Curve (lineair of kwadratisch)
+      float curve = delta_outside;
+      if (factorC > 0.0f)
+        curve = factorC / target * powf(delta_outside, 2.0f)
+              + (1.0f - factorC) * delta_outside;
+
+      float sp = target + factor * curve;
+
+      // Stuur 0 naar ketel wanneer verwarming en koeling uit zijn
+      if (!id(ch_enabled_g) && !id(cooling_enabled_g))
+        return 0.0f;
+
+      return sp;
     on_value:
       then:
-        - component.update: thermostat_display
+        # Setpunttrend bijhouden (voor schakellogica)
+        - lambda: |-
+            float prev = id(setpoint_prev);
+            id(setpoint_trend_g) = isnan(prev) ? 0.0f : x - prev;
+            id(setpoint_prev) = x;
+        # LVGL bijwerken
+        - lvgl.label.update:
+            id: lbl_setpoint
+            text:
+              format: "%.1f°"
+              args: [x]
+        - lvgl.label.update:
+            id: lbl_boiler_setpoint
+            text:
+              format: "%.1f°"
+              args: [x]
+        # OT: aanvoerwater setpoint doorsturen (0..55 → 0..1)
+        - output.set_level:
+            id: ot_t_set_output
+            level: !lambda "return (isnan(x) || x <= 0.0f) ? 0.0f : x / 55.0f;"
 
+  # Setpunttrend beschikbaar in HA voor monitoring
   - platform: template
     name: Setpoint Trend
     id: st_setpoint_trend
-    unit_of_measurement: "C"
+    unit_of_measurement: "°C/10s"
     state_class: measurement
-    lambda: return id(thermo_control_component).setpoint_trend();
     update_interval: 10s
-    on_value:
-      then:
-        - component.update: thermostat_display
+    lambda: "return id(setpoint_trend_g);"
 
+# ── Binary sensors ────────────────────────────────────────────────────────────
 binary_sensor:
   - platform: opentherm
     fault_indication:
       name: Boiler Fault
       id: ot_fault
+      on_state:
+        then:
+          - lvgl.label.update:
+              id: lbl_ot_fault
+              text: !lambda 'return x ? "ERR" : "OT";'
+          - lvgl.label.update:
+              id: lbl_status_ot
+              text: !lambda 'return x ? "FOUT" : "Nee";'
     ch_active:
       name: Boiler CH Active
       id: ot_ch_active
+      on_state:
+        then:
+          - lvgl.label.update:
+              id: lbl_status_ch
+              text: !lambda 'return x ? "AAN" : "UIT";'
     dhw_active:
       name: Boiler DHW Active
       id: ot_dhw_active
     flame_on:
       name: Boiler Flame
       id: ot_flame
+      on_state:
+        then:
+          - lvgl.label.update:
+              id: lbl_flame
+              text: !lambda 'return x ? "F" : "-";'
     cooling_active:
       name: Boiler Cooling Active
       id: ot_cooling_active
+      on_state:
+        then:
+          - lvgl.label.update:
+              id: lbl_status_cool
+              text: !lambda 'return x ? "AAN" : "UIT";'
 
+  # Status slimme regeling (afgeleid van globals)
   - platform: template
     name: Smart Heating Enabled
-    lambda: return id(thermo_control_component).heating_enabled();
-
+    id: smart_heating
+    lambda: "return id(ch_enabled_g);"
   - platform: template
     name: Smart Cooling Enabled
-    lambda: return id(thermo_control_component).cooling_enabled();
+    id: smart_cooling
+    lambda: "return id(cooling_enabled_g);"
 
+  # ── Navigatieknoppen (actief LOW, 4k7 externe pull-up op module) ────────────
+  - platform: gpio
+    pin:
+      number: GPIO32
+      mode: { input: true, pullup: false }
+      inverted: true
+    id: btn_up
+    name: "Button UP"
+    internal: true
+    filters:
+      - delayed_on: 30ms
+    on_press:
+      then:
+        - globals.set:
+            id: last_interaction
+            value: !lambda "return millis();"
+        - if:
+            condition:
+              lambda: "return id(target_temp_number).state < 25.0f;"
+            then:
+              - number.increment:
+                  id: target_temp_number
+                  cycle: false
+
+  - platform: gpio
+    pin:
+      number: GPIO33
+      mode: { input: true, pullup: false }
+      inverted: true
+    id: btn_down
+    name: "Button DOWN"
+    internal: true
+    filters:
+      - delayed_on: 30ms
+    on_press:
+      then:
+        - globals.set:
+            id: last_interaction
+            value: !lambda "return millis();"
+        - if:
+            condition:
+              lambda: "return id(target_temp_number).state > 18.0f;"
+            then:
+              - number.decrement:
+                  id: target_temp_number
+                  cycle: false
+
+  - platform: gpio
+    pin:
+      number: GPIO34    # input-only pin; externe pull-up vereist
+      mode: { input: true, pullup: false }
+      inverted: true
+    id: btn_left
+    name: "Button LEFT"
+    internal: true
+    filters:
+      - delayed_on: 30ms
+    on_press:
+      then:
+        - globals.set:
+            id: last_interaction
+            value: !lambda "return millis();"
+        - lvgl.page.previous:
+
+  - platform: gpio
+    pin:
+      number: GPIO35    # input-only pin; externe pull-up vereist
+      mode: { input: true, pullup: false }
+      inverted: true
+    id: btn_right
+    name: "Button RIGHT"
+    internal: true
+    filters:
+      - delayed_on: 30ms
+    on_press:
+      then:
+        - globals.set:
+            id: last_interaction
+            value: !lambda "return millis();"
+        - lvgl.page.next:
+
+# ── OpenTherm schakelaars ─────────────────────────────────────────────────────
 switch:
   - platform: opentherm
     ch_enable:
@@ -211,6 +706,7 @@ switch:
       id: ot_cooling_enable
       restore_mode: DISABLED
 
+# ── OpenTherm float outputs ───────────────────────────────────────────────────
 output:
   - platform: opentherm
     t_set:
@@ -227,193 +723,154 @@ output:
       min_value: 0
       max_value: 40
 
+# ── Instelbare parameters ─────────────────────────────────────────────────────
 number:
   - platform: template
     name: Target Temperature
     id: target_temp_number
     min_value: 18.0
     max_value: 25.0
-    step: 0.1
+    step: 0.5          # 0,5 °C per knopdruk
     restore_value: true
     optimistic: true
     initial_value: 21.0
+    unit_of_measurement: "°C"
+    device_class: temperature
     set_action:
-      - component.update: thermostat_display
+      then:
+        # LVGL labels bijwerken
+        - lvgl.label.update:
+            id: lbl_target_home
+            text:
+              format: "%.1f°"
+              args: [x]
+        - lvgl.label.update:
+            id: lbl_target_large
+            text:
+              format: "%.1f"
+              args: [x]
+        # OT: kamersetpunt doorsturen (18..25 → 0..1)
+        - output.set_level:
+            id: ot_t_room_set_output
+            level: !lambda "return (x - 18.0f) / 7.0f;"
 
   - platform: template
-    name: Heating Curve Factor A
+    name: Heating Curve Factor A   # basisverwarmingsvraag (buiten-gebaseerd)
     id: factor_a_number
     min_value: 0.0
     max_value: 1.5
     step: 0.05
     restore_value: true
     optimistic: true
-    initial_value: 0.55
-    set_action:
-      - component.update: thermostat_display
+    initial_value: 0.65   # default uit originele HeatingCurve.cpp
 
   - platform: template
-    name: Heating Curve Factor B
+    name: Heating Curve Factor B   # correctie o.b.v. kamertemperatuur
     id: factor_b_number
     min_value: 0.0
     max_value: 1.5
     step: 0.05
     restore_value: true
     optimistic: true
-    initial_value: 0.45
-    set_action:
-      - component.update: thermostat_display
+    initial_value: 0.20   # INSIDE_FACTOR uit originele code
 
   - platform: template
-    name: Heating Curve Factor C
+    name: Heating Curve Factor C   # kwadratisch curveaandeel
     id: factor_c_number
     min_value: 0.0
     max_value: 1.5
     step: 0.05
     restore_value: true
     optimistic: true
-    initial_value: 0.35
-    set_action:
-      - component.update: thermostat_display
+    initial_value: 0.00   # CURVE_FACTOR uit originele code (lineair)
 
-thermo_control:
-  id: thermo_control_component
-  room_raw_sensor: ds18_room_raw
-  outside_raw_sensor: ot_outside_raw
-  inlet_raw_sensor: ot_return_raw
-  outlet_raw_sensor: ot_boiler_raw
-  target_number: target_temp_number
-  factor_a_number: factor_a_number
-  factor_b_number: factor_b_number
-  factor_c_number: factor_c_number
-  ch_enable_switch: ot_ch_enable
-  cooling_enable_switch: ot_cooling_enable
-  t_set_output: ot_t_set_output
-  t_room_set_output: ot_t_room_set_output
-  t_room_output: ot_t_room_output
-  update_interval: 10s
-  antipendel: 30min
-
-display:
-  - platform: st7735
-    id: thermostat_display
-    model: INITR_BLACKTAB
-    cs_pin: GPIO5
-    dc_pin: GPIO27
-    col_start: 0
-    row_start: 0
-    rotation: 90
-    device_width: 128
-    device_height: 160
-    auto_clear_enabled: false
-    update_interval: never
-    lambda: |-
-      const int left = 0;
-      const int mid = 54;
-      const int right = 108;
-      const Color black = Color(0, 0, 0);
-      const int w_small = 48;
-      const int w_mid = 44;
-      const int h = 14;
-
-      static bool initialized = false;
-      static std::string prev_time;
-      static std::string prev_outside;
-      static std::string prev_room;
-      static std::string prev_target;
-      static std::string prev_inlet;
-      static std::string prev_outlet;
-      static std::string prev_setpoint;
-      static std::string prev_level;
-      static std::string prev_ch;
-      static std::string prev_cool;
-
-      auto render_field = [&](int x, int y, int width, std::string &cache, const std::string &value) {
-        if (value == cache)
-          return;
-        it.filled_rectangle(x, y, width, h, black);
-        it.print(x, y, value.c_str());
-        cache = value;
-      };
-
-      if (!initialized) {
-        it.fill(black);
-        it.print(left, 16, "Outside");
-        it.print(mid, 16, "Room");
-        it.print(right, 16, "Target");
-        it.print(left, 54, "Inlet");
-        it.print(mid, 54, "Outlet");
-        it.print(right, 54, "Set");
-        initialized = true;
-      }
-
-      std::string time_text = "";
-      if (id(ha_time).now().is_valid()) {
-        char buf[24];
-        id(ha_time).now().strftime(buf, sizeof(buf), "%a %d %b %H:%M");
-        time_text = buf;
-      }
-      render_field(left, 0, 160, prev_time, time_text);
-
-      std::string outside_text = "n/a";
-      if (id(st_outside_temp).has_state()) {
-        char buf[8];
-        snprintf(buf, sizeof(buf), "%.1f", id(st_outside_temp).state);
-        outside_text = buf;
-      }
-      render_field(left, 30, w_small, prev_outside, outside_text);
-
-      std::string room_text = "n/a";
-      if (id(st_room_temp).has_state()) {
-        char buf[8];
-        snprintf(buf, sizeof(buf), "%.1f", id(st_room_temp).state);
-        room_text = buf;
-      }
-      render_field(mid, 30, w_mid, prev_room, room_text);
-
-      char target_buf[8];
-      snprintf(target_buf, sizeof(target_buf), "%.1f", id(target_temp_number).state);
-      render_field(right, 30, w_small, prev_target, target_buf);
-
-      std::string inlet_text = "n/a";
-      if (id(st_inlet_temp).has_state()) {
-        char buf[8];
-        snprintf(buf, sizeof(buf), "%.1f", id(st_inlet_temp).state);
-        inlet_text = buf;
-      }
-      render_field(left, 68, w_small, prev_inlet, inlet_text);
-
-      std::string outlet_text = "n/a";
-      if (id(st_outlet_temp).has_state()) {
-        char buf[8];
-        snprintf(buf, sizeof(buf), "%.1f", id(st_outlet_temp).state);
-        outlet_text = buf;
-      }
-      render_field(mid, 68, w_mid, prev_outlet, outlet_text);
-
-      std::string setpoint_text = "n/a";
-      if (id(st_setpoint_temp).has_state()) {
-        char buf[8];
-        snprintf(buf, sizeof(buf), "%.1f", id(st_setpoint_temp).state);
-        setpoint_text = buf;
-      }
-      render_field(right, 68, w_small, prev_setpoint, setpoint_text);
-
-      std::string level_text = "Lvl n/a";
-      if (id(ot_modulation).has_state()) {
-        char buf[16];
-        snprintf(buf, sizeof(buf), "Lvl %.1f%%", id(ot_modulation).state);
-        level_text = buf;
-      }
-      render_field(left, 100, 54, prev_level, level_text);
-
-      render_field(mid, 100, 56, prev_ch, std::string("CH:") + (id(thermo_control_component).heating_enabled() ? "on" : "off"));
-      render_field(mid, 114, 56, prev_cool, std::string("Cool:") + (id(thermo_control_component).cooling_enabled() ? "on" : "off"));
-
+# ── Interval ──────────────────────────────────────────────────────────────────
 interval:
-  - interval: 30s
+  # Klokupdate + scherm-timeout (elke 10 s)
+  - interval: 10s
     then:
-      - component.update: thermostat_display
+      - if:
+          condition:
+            lambda: "return id(ha_time).now().is_valid();"
+          then:
+            - lvgl.label.update:
+                id: lbl_time
+                text: !lambda |-
+                  auto t = id(ha_time).now();
+                  char buf[6];
+                  t.strftime(buf, sizeof(buf), "%H:%M");
+                  return std::string(buf);
+      - if:
+          condition:
+            lambda: "return id(last_interaction) > 0 && (millis() - id(last_interaction)) > 30000UL;"
+          then:
+            - globals.set:
+                id: last_interaction
+                value: "0"
+            - lvgl.page.show:
+                id: page_home
 
+  # Slimme schakellogica (elke 10 s) – geport vanuit SmartControl::set_operating_mode()
+  #
+  # Antipendel: geen schakelactie binnen 30 minuten na laatste actie.
+  # Verwarming AAN: 2 * setpunttrend > (Tkamer - Tdoel)
+  #                 = "zet verwarming aan vóórdat de kamer te koud wordt"
+  # Verwarming UIT: aanvoerwater (retour) heeft setpunt bereikt
+  # Koeling AAN/UIT: eenvoudige hysterese op 25 °C
+  #
+  - interval: 10s
+    then:
+      - lambda: |-
+          const uint32_t ANTIPENDEL_MS = 30UL * 60UL * 1000UL;
+          if ((millis() - id(last_switch_ms)) < ANTIPENDEL_MS)
+            return;
+
+          float inside  = id(st_room_temp).state;
+          float outside = id(st_outside_temp).state;
+          float target  = id(target_temp_number).state;
+          float sp      = id(st_setpoint_temp).state;
+          float inlet   = id(st_inlet_temp).state;
+          float trend   = id(setpoint_trend_g);
+
+          if (isnan(inside) || isnan(target)) return;
+
+          // ── Koeling AAN ──────────────────────────────────────────────────
+          if (!id(cooling_enabled_g)
+              && inside  > 25.0f
+              && !isnan(outside) && outside > 25.0f) {
+            id(cooling_enabled_g) = true;
+            id(ot_cooling_enable).turn_on();
+            id(last_switch_ms) = millis();
+            return;
+          }
+          // ── Koeling UIT ──────────────────────────────────────────────────
+          if (id(cooling_enabled_g) && inside < 25.0f) {
+            id(cooling_enabled_g) = false;
+            id(ot_cooling_enable).turn_off();
+            id(last_switch_ms) = millis();
+            return;
+          }
+          // ── Verwarming AAN ───────────────────────────────────────────────
+          if (!id(ch_enabled_g) && inside < 25.0f && !isnan(sp)) {
+            float error = roundf(10.0f * (inside - target)) / 10.0f;
+            if (2.0f * trend > error) {
+              id(ch_enabled_g) = true;
+              id(ot_ch_enable).turn_on();
+              id(last_switch_ms) = millis();
+            }
+            return;
+          }
+          // ── Verwarming UIT ───────────────────────────────────────────────
+          if (id(ch_enabled_g) && !isnan(inlet) && !isnan(sp) && sp > 0.0f) {
+            float r_inlet = roundf(10.0f * inlet) / 10.0f;
+            float r_sp    = roundf(10.0f * sp)    / 10.0f;
+            if (r_inlet - r_sp > 0.1f) {
+              id(ch_enabled_g) = false;
+              id(ot_ch_enable).turn_off();
+              id(last_switch_ms) = millis();
+            }
+          }
+
+# ── Status LED ────────────────────────────────────────────────────────────────
 status_led:
   pin: GPIO2

@@ -7,10 +7,16 @@ substitutions:
   device_id: p1-sdm630-emu
   build_root: !secret build_root
 
+packages:
+  version: !include version.yaml
+
 esphome:
   name: ${device_id}
-  build_path: ${build_root}/${device_id}  
+  build_path: ${build_root}/${device_id}
   friendly_name: SDM630 Emulator
+  project:
+    name: 'EcoGrid.P1 SDM630 Emulator'
+    version: ${version}
 
 esp32:
   board: esp32dev # ESP32 Dev Module, 4MB flash

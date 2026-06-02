@@ -9,4 +9,5 @@ substitutions:
   humidity_offset: '0.2'
 
 packages:
+  version: !include version.yaml
   base: !include resideo-base.yaml

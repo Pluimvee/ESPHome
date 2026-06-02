@@ -7,13 +7,16 @@ substitutions:
   device_id: p1-reader
   build_root: !secret build_root
 
+packages:
+  version: !include version.yaml
+
 esphome:
   name: ${device_id}
   build_path: ${build_root}/${device_id}  
   friendly_name: P1 Reader
   project:
     name: 'EcoGrid.Connect - DSMR/P1 Reader'
-    version: Apr 7 2026 
+    version: ${version}
 
 esp8266:
   board: esp12e

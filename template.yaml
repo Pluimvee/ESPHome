@@ -28,6 +28,7 @@ esp8266:
   board: esp8285  # 1MB flash iternally
   board: esp12e   # 4MB flash
   board: d1_mini  # 4MB flash, wemos pin definitions
+  # conversion from esp01_1m to esp12e cannot be done safely using OTA due to different flash image
   board: esp01_1m # 1MB flash, 512kb SPIFFS
   restore_from_flash: true  # enable restoring all preferences from flash on boot
 
@@ -52,6 +53,7 @@ ota:
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
+  min_auth_mode: WPA2
 
 # Enable fallback hotspot (captive portal) in case wifi connection fails
   ap:

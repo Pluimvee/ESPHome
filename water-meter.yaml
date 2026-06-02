@@ -9,13 +9,16 @@ substitutions:
   pulse_fraction: 0.450 # the fraction between uppulse and down-pulse for each turn (which is 1ltr)
   calibrate_total: '3091.8232' # the total water used in m³ at the moment of flashing (for correct total usage)
 
+packages:
+  version: !include version.yaml
+
 esphome:
   name: ${device_id}
   build_path: ${build_root}/${device_id}  
   friendly_name: Water Meter
   project:
     name: 'EcoGrid.Connect - Water meter'
-    version: May 15 2026
+    version: ${version}
   on_boot:
     priority: -100  # Zorgt dat dit als laatste gebeurt (na WiFi, tijd, etc.)
     then:
