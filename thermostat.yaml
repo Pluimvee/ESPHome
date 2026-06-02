@@ -1,11 +1,12 @@
-# Copyright (c) 2026 Pluimvee
-# Smart Thermostat – ESP32 WROOM + SSD1315 128×64 OLED (I²C) + 4 knoppen
+﻿# Copyright (c) 2026 Pluimvee
+# Smart Thermostat â€“ ESP32 WROOM + SSD1315 128Ã—64 OLED (IÂ²C) + 4 knoppen
 # Regellogica (verwarmingscurve, antipendel) in native ESPHome YAML.
 
 substitutions:
   device_id: thermostat
   device_name: Thermostat
   build_root: !secret build_root
+  friendly_name: ${device_name}
 
 packages:
   wifi: !include wifi.yaml
@@ -13,8 +14,8 @@ packages:
 
 esphome:
   name: ${device_id}
-  friendly_name: ${device_name}
-  comment: Thermostaat ESP32 – OpenTherm + OLED 128×64 LVGL + 4 knoppen
+  friendly_name: ${friendly_name}
+  comment: Thermostaat ESP32 â€“ OpenTherm + OLED 128Ã—64 LVGL + 4 knoppen
   project:
     name: 'EcoGrid.Thermostat'
     version: ${version}
@@ -56,11 +57,11 @@ time:
 preferences:
   flash_write_interval: 60s
 
-# ── Hardware ────────────────────────────────────────────────────────────────
+# â”€â”€ Hardware â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 i2c:
   sda: GPIO21
   scl: GPIO22
-  scan: false   # zet op true bij eerste boot om I²C-adres te zoeken
+  scan: false   # zet op true bij eerste boot om IÂ²C-adres te zoeken
 
 one_wire:
   - platform: gpio
@@ -72,25 +73,25 @@ opentherm:
   out_pin: GPIO16
   sync_mode: true
 
-# ── Fonts voor LVGL (bpp:1 = geen anti-aliasing, ideaal voor monochrome OLED) ──
+# â”€â”€ Fonts voor LVGL (bpp:1 = geen anti-aliasing, ideaal voor monochrome OLED) â”€â”€
 font:
   - file: "gfonts://Roboto"
-    id: font_s        # 8 pt – labels, statusbalk, header
+    id: font_s        # 8 pt â€“ labels, statusbalk, header
     size: 8
     bpp: 1
-    glyphs: " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~°%+"
+    glyphs: " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~Â°%+"
   - file: "gfonts://Roboto"
-    id: font_m        # 12 pt – temperatuurwaarden op overzichtscherm
+    id: font_m        # 12 pt â€“ temperatuurwaarden op overzichtscherm
     size: 12
     bpp: 1
-    glyphs: " 0123456789.-°C%nNaA/"
+    glyphs: " 0123456789.-Â°C%nNaA/"
   - file: "gfonts://Roboto"
-    id: font_l        # 18 pt – grote doeltemperatuur op instelscherm
+    id: font_l        # 18 pt â€“ grote doeltemperatuur op instelscherm
     size: 18
     bpp: 1
-    glyphs: " 0123456789.-°C"
+    glyphs: " 0123456789.-Â°C"
 
-# ── Globals ──────────────────────────────────────────────────────────────────
+# â”€â”€ Globals â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 globals:
   # Schakelstatus verwarmingssysteem
   - id: ch_enabled_g
@@ -101,7 +102,7 @@ globals:
     type: bool
     restore_value: false
     initial_value: "false"
-  # Antipendel – tijdstip laatste schakelactie (ms)
+  # Antipendel â€“ tijdstip laatste schakelactie (ms)
   - id: last_switch_ms
     type: uint32_t
     restore_value: false
@@ -121,7 +122,7 @@ globals:
     restore_value: false
     initial_value: "0"
 
-# ── Display (raw driver – LVGL beheert rendering) ────────────────────────────
+# â”€â”€ Display (raw driver â€“ LVGL beheert rendering) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 display:
   - platform: ssd1306_i2c
     model: "SSD1306 128x64"
@@ -129,17 +130,17 @@ display:
     id: thermostat_display
     update_interval: never
 
-# ── LVGL – 4 pagina's ────────────────────────────────────────────────────────
+# â”€â”€ LVGL â€“ 4 pagina's â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 lvgl:
   displays:
     - thermostat_display
   default_font: font_s
 
   pages:
-    # ══════════════════════════════════════════════════════════════════════════
-    # Pagina 0 — Home / overzicht  (standaard na 30 s timeout)
-    # Gele zone hardware = y 0–15; blauwe zone = y 16–63
-    # ══════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    # Pagina 0 â€” Home / overzicht  (standaard na 30 s timeout)
+    # Gele zone hardware = y 0â€“15; blauwe zone = y 16â€“63
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     - id: page_home
       widgets:
         # Statusbalk (geel)
@@ -168,7 +169,7 @@ lvgl:
             x: 113
             y: 4
             text: "-"
-        # Ruimtetemperaturen (blauw, y 16–40)
+        # Ruimtetemperaturen (blauw, y 16â€“40)
         - label:
             x: 0
             y: 17
@@ -199,7 +200,7 @@ lvgl:
             y: 27
             text: "n/a"
             text_font: font_m
-        # Watertemperaturen (blauw, y 41–63)
+        # Watertemperaturen (blauw, y 41â€“63)
         - label:
             x: 0
             y: 42
@@ -221,9 +222,9 @@ lvgl:
             text: "n/a"
             text_font: font_m
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # Pagina 1 — Doeltemperatuur instellen  (UP/DOWN actief)
-    # ══════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    # Pagina 1 â€” Doeltemperatuur instellen  (UP/DOWN actief)
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     - id: page_target
       widgets:
         - label:
@@ -245,9 +246,9 @@ lvgl:
             y: 54
             text: "[ - DOWN ]"
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # Pagina 2 — Keteldetails
-    # ══════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    # Pagina 2 â€” Keteldetails
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     - id: page_boiler
       widgets:
         - label:
@@ -295,9 +296,9 @@ lvgl:
             text: "n/a"
             text_font: font_m
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # Pagina 3 — Verbindingsstatus
-    # ══════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    # Pagina 3 â€” Verbindingsstatus
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     - id: page_status
       widgets:
         - label:
@@ -350,15 +351,15 @@ lvgl:
             y: 57
             text: "?"
 
-# ── Sensors ──────────────────────────────────────────────────────────────────
+# â”€â”€ Sensors â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 sensor:
-  # Ruimtetemperatuur – DS18B20 (gang)
+  # Ruimtetemperatuur â€“ DS18B20 (gang)
   - platform: dallas_temp
     one_wire_id: onewire_bus
     index: 0
     name: Room Temperature
     id: st_room_temp
-    unit_of_measurement: "°C"
+    unit_of_measurement: "Â°C"
     device_class: temperature
     state_class: measurement
     update_interval: 10s
@@ -373,9 +374,9 @@ sensor:
         - lvgl.label.update:
             id: lbl_room
             text:
-              format: "%.1f°"
+              format: "%.1fÂ°"
               args: [x]
-        # OT: stuur huidige kamertemperatuur naar ketel (0..40 → 0..1)
+        # OT: stuur huidige kamertemperatuur naar ketel (0..40 â†’ 0..1)
         - output.set_level:
             id: ot_t_room_output
             level: !lambda "return isnan(x) ? 0.0f : x / 40.0f;"
@@ -385,7 +386,7 @@ sensor:
     t_outside:
       name: Outside Temperature
       id: st_outside_temp
-      unit_of_measurement: "°C"
+      unit_of_measurement: "Â°C"
       device_class: temperature
       state_class: measurement
       filters:
@@ -397,12 +398,12 @@ sensor:
           - lvgl.label.update:
               id: lbl_outside
               text:
-                format: "%.1f°"
+                format: "%.1fÂ°"
                 args: [x]
     t_ret:
       name: Inlet Temperature
       id: st_inlet_temp
-      unit_of_measurement: "°C"
+      unit_of_measurement: "Â°C"
       device_class: temperature
       state_class: measurement
       filters:
@@ -414,17 +415,17 @@ sensor:
           - lvgl.label.update:
               id: lbl_inlet
               text:
-                format: "%.1f°"
+                format: "%.1fÂ°"
                 args: [x]
           - lvgl.label.update:
               id: lbl_boiler_inlet
               text:
-                format: "%.1f°"
+                format: "%.1fÂ°"
                 args: [x]
     t_boiler:
       name: Outlet Temperature
       id: st_outlet_temp
-      unit_of_measurement: "°C"
+      unit_of_measurement: "Â°C"
       device_class: temperature
       state_class: measurement
       on_value:
@@ -432,7 +433,7 @@ sensor:
           - lvgl.label.update:
               id: lbl_boiler_outlet
               text:
-                format: "%.1f°"
+                format: "%.1fÂ°"
                 args: [x]
     rel_mod_level:
       name: Modulation Level
@@ -464,7 +465,7 @@ sensor:
   - platform: template
     name: Water Setpoint
     id: st_setpoint_temp
-    unit_of_measurement: "°C"
+    unit_of_measurement: "Â°C"
     device_class: temperature
     state_class: measurement
     update_interval: 10s
@@ -514,14 +515,14 @@ sensor:
         - lvgl.label.update:
             id: lbl_setpoint
             text:
-              format: "%.1f°"
+              format: "%.1fÂ°"
               args: [x]
         - lvgl.label.update:
             id: lbl_boiler_setpoint
             text:
-              format: "%.1f°"
+              format: "%.1fÂ°"
               args: [x]
-        # OT: aanvoerwater setpoint doorsturen (0..55 → 0..1)
+        # OT: aanvoerwater setpoint doorsturen (0..55 â†’ 0..1)
         - output.set_level:
             id: ot_t_set_output
             level: !lambda "return (isnan(x) || x <= 0.0f) ? 0.0f : x / 55.0f;"
@@ -530,12 +531,12 @@ sensor:
   - platform: template
     name: Setpoint Trend
     id: st_setpoint_trend
-    unit_of_measurement: "°C/10s"
+    unit_of_measurement: "Â°C/10s"
     state_class: measurement
     update_interval: 10s
     lambda: "return id(setpoint_trend_g);"
 
-# ── Binary sensors ────────────────────────────────────────────────────────────
+# â”€â”€ Binary sensors â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 binary_sensor:
   - platform: opentherm
     fault_indication:
@@ -587,7 +588,7 @@ binary_sensor:
     id: smart_cooling
     lambda: "return id(cooling_enabled_g);"
 
-  # ── Navigatieknoppen (actief LOW, 4k7 externe pull-up op module) ────────────
+  # â”€â”€ Navigatieknoppen (actief LOW, 4k7 externe pull-up op module) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   - platform: gpio
     pin:
       number: GPIO32
@@ -668,7 +669,7 @@ binary_sensor:
             value: !lambda "return millis();"
         - lvgl.page.next:
 
-# ── OpenTherm schakelaars ─────────────────────────────────────────────────────
+# â”€â”€ OpenTherm schakelaars â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 switch:
   - platform: opentherm
     ch_enable:
@@ -684,7 +685,7 @@ switch:
       id: ot_cooling_enable
       restore_mode: DISABLED
 
-# ── OpenTherm float outputs ───────────────────────────────────────────────────
+# â”€â”€ OpenTherm float outputs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 output:
   - platform: opentherm
     t_set:
@@ -701,18 +702,18 @@ output:
       min_value: 0
       max_value: 40
 
-# ── Instelbare parameters ─────────────────────────────────────────────────────
+# â”€â”€ Instelbare parameters â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 number:
   - platform: template
     name: Target Temperature
     id: target_temp_number
     min_value: 18.0
     max_value: 25.0
-    step: 0.5          # 0,5 °C per knopdruk
+    step: 0.5          # 0,5 Â°C per knopdruk
     restore_value: true
     optimistic: true
     initial_value: 21.0
-    unit_of_measurement: "°C"
+    unit_of_measurement: "Â°C"
     device_class: temperature
     set_action:
       then:
@@ -720,14 +721,14 @@ number:
         - lvgl.label.update:
             id: lbl_target_home
             text:
-              format: "%.1f°"
+              format: "%.1fÂ°"
               args: [x]
         - lvgl.label.update:
             id: lbl_target_large
             text:
               format: "%.1f"
               args: [x]
-        # OT: kamersetpunt doorsturen (18..25 → 0..1)
+        # OT: kamersetpunt doorsturen (18..25 â†’ 0..1)
         - output.set_level:
             id: ot_t_room_set_output
             level: !lambda "return (x - 18.0f) / 7.0f;"
@@ -762,7 +763,7 @@ number:
     optimistic: true
     initial_value: 0.00   # CURVE_FACTOR uit originele code (lineair)
 
-# ── Interval ──────────────────────────────────────────────────────────────────
+# â”€â”€ Interval â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 interval:
   # Klokupdate + scherm-timeout (elke 10 s)
   - interval: 10s
@@ -788,13 +789,13 @@ interval:
             - lvgl.page.show:
                 id: page_home
 
-  # Slimme schakellogica (elke 10 s) – geport vanuit SmartControl::set_operating_mode()
+  # Slimme schakellogica (elke 10 s) â€“ geport vanuit SmartControl::set_operating_mode()
   #
   # Antipendel: geen schakelactie binnen 30 minuten na laatste actie.
   # Verwarming AAN: 2 * setpunttrend > (Tkamer - Tdoel)
-  #                 = "zet verwarming aan vóórdat de kamer te koud wordt"
+  #                 = "zet verwarming aan vÃ³Ã³rdat de kamer te koud wordt"
   # Verwarming UIT: aanvoerwater (retour) heeft setpunt bereikt
-  # Koeling AAN/UIT: eenvoudige hysterese op 25 °C
+  # Koeling AAN/UIT: eenvoudige hysterese op 25 Â°C
   #
   - interval: 10s
     then:
@@ -812,7 +813,7 @@ interval:
 
           if (isnan(inside) || isnan(target)) return;
 
-          // ── Koeling AAN ──────────────────────────────────────────────────
+          // â”€â”€ Koeling AAN â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
           if (!id(cooling_enabled_g)
               && inside  > 25.0f
               && !isnan(outside) && outside > 25.0f) {
@@ -821,14 +822,14 @@ interval:
             id(last_switch_ms) = millis();
             return;
           }
-          // ── Koeling UIT ──────────────────────────────────────────────────
+          // â”€â”€ Koeling UIT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
           if (id(cooling_enabled_g) && inside < 25.0f) {
             id(cooling_enabled_g) = false;
             id(ot_cooling_enable).turn_off();
             id(last_switch_ms) = millis();
             return;
           }
-          // ── Verwarming AAN ───────────────────────────────────────────────
+          // â”€â”€ Verwarming AAN â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
           if (!id(ch_enabled_g) && inside < 25.0f && !isnan(sp)) {
             float error = roundf(10.0f * (inside - target)) / 10.0f;
             if (2.0f * trend > error) {
@@ -838,7 +839,7 @@ interval:
             }
             return;
           }
-          // ── Verwarming UIT ───────────────────────────────────────────────
+          // â”€â”€ Verwarming UIT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
           if (id(ch_enabled_g) && !isnan(inlet) && !isnan(sp) && sp > 0.0f) {
             float r_inlet = roundf(10.0f * inlet) / 10.0f;
             float r_sp    = roundf(10.0f * sp)    / 10.0f;
@@ -849,6 +850,6 @@ interval:
             }
           }
 
-# ── Status LED ────────────────────────────────────────────────────────────────
+# â”€â”€ Status LED â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 status_led:
   pin: GPIO2

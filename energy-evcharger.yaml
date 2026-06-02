@@ -7,6 +7,7 @@
 substitutions:
   device_id: "energy-evcharger"
   build_root: !secret build_root
+  friendly_name: EV Charger Mains
 
 packages:
   wifi: !include wifi.yaml
@@ -15,7 +16,7 @@ packages:
 esphome:
   name: ${device_id}
   build_path: ${build_root}/${device_id}
-  friendly_name: EV Charger Mains
+  friendly_name: ${friendly_name}
   project:
     name: 'EcoGrid.Energy meter AT/TUYA mod (DIN Latching)'
     version: ${version}

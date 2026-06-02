@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Pluimvee
+﻿# Copyright (c) 2026 Pluimvee
 # Smart Thermostat front-end UI - Sunton ESP32-3248S035R (CYD 3.5")
 # ESP32 + ILI9488 480x320 + XPT2046 resistive touch + SD-card slot
 
@@ -8,10 +8,11 @@ substitutions:
   device_id: nexo
   device_name: Nexo
   build_root: !secret build_root
+  friendly_name: ${device_name}
 
 esphome:
   name: ${device_id}
-  friendly_name: ${device_name}
+  friendly_name: ${friendly_name}
   comment: Nexo - touchscreen front-end (Sunton ESP32-3248S035R, ILI9488 + XPT2046)
   build_path: ${build_root}/${device_id}
   project:

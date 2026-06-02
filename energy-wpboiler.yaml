@@ -1,4 +1,4 @@
-# Copyright (c) 2025 Pluimvee
+﻿# Copyright (c) 2025 Pluimvee
 # Energy meter used for the Dishwasher
 # SONOFF MODULE - RELAIS SHORTED TO ACT ONLY AS ENERGY METER
 
@@ -7,6 +7,7 @@
 substitutions:
   device_id: "energy-wpboiler"
   build_root: !secret build_root
+  friendly_name: Energy Meter Warmtepompboiler
 
 packages:
   wifi: !include wifi.yaml
@@ -15,7 +16,7 @@ packages:
 esphome:
   name: ${device_id}
   build_path: ${build_root}/${device_id}
-  friendly_name: Energy Meter Warmtepompboiler
+  friendly_name: ${friendly_name}
   project:
     name: 'EcoGrid.Energy meter SONOFF mod (always on)'
     version: ${version}

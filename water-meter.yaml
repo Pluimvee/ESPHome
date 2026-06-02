@@ -8,6 +8,7 @@ substitutions:
   build_root: !secret build_root
   pulse_fraction: 0.450 # the fraction between uppulse and down-pulse for each turn (which is 1ltr)
   calibrate_total: '3091.8232' # the total water used in mÂ³ at the moment of flashing (for correct total usage)
+  friendly_name: Water Meter
 
 packages:
   wifi: !include wifi.yaml
@@ -16,7 +17,7 @@ packages:
 esphome:
   name: ${device_id}
   build_path: ${build_root}/${device_id}  
-  friendly_name: Water Meter
+  friendly_name: ${friendly_name}
   project:
     name: 'EcoGrid.Connect - Water meter'
     version: ${version}

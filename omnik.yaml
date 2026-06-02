@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Pluimvee
+﻿# Copyright (c) 2026 Pluimvee
 # Omnik Inverter WiFi Bridge
 
 # First some basic configuration
@@ -9,6 +9,7 @@ substitutions:
   # 19.03 MWh uit Solarman met ingangsdatum 10 dec 2012 en laatste update 8 nov 2023
   # + geschatte missende periode dec 2023 t/m 11 feb 2026 obv HA statistieken (dmv codex)
   min_total_kwh: "23566.0"
+  friendly_name: Omnik Inverter
 
 packages:
   wifi: !include wifi.yaml
@@ -16,7 +17,7 @@ packages:
 
 esphome:
   name: ${device_id}
-  friendly_name: Omnik Inverter
+  friendly_name: ${friendly_name}
   build_path: ${build_root}/${device_id}  
   project:
     name: 'EcoGrid.Omnik Inverter WiFi Bridge'

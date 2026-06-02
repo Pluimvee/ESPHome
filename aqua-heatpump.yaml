@@ -1,4 +1,4 @@
-# Copyright (c) 2025 Pluimvee
+﻿# Copyright (c) 2025 Pluimvee
 # Aqua Heatpump configuration 
 
 # First some basic configuration
@@ -6,6 +6,7 @@
 substitutions:
   device_id: aqua-heatpump  
   build_root: !secret build_root
+  friendly_name: Warmtepomp boiler
 
 packages:
   wifi: !include wifi.yaml
@@ -13,7 +14,7 @@ packages:
 
 esphome:
   name: ${device_id}
-  friendly_name: Warmtepomp boiler
+  friendly_name: ${friendly_name}
   build_path: ${build_root}/${device_id}  
   project:
     name: 'EcoGrid.Waterboiler heatpump and central ventilation control'
@@ -46,7 +47,7 @@ one_wire:
   - platform: gpio
     pin: GPIO013
 
-# I²C bus (AHT10)
+# IÂ²C bus (AHT10)
 i2c:
   sda: GPIO4  # D2
   scl: GPIO5  # D1
@@ -205,7 +206,7 @@ globals:
 
 # Automations
 interval:
-  # SAFETY: When the boiler temperature is above 80°C, turn off the boost switch
+  # SAFETY: When the boiler temperature is above 80Â°C, turn off the boost switch
   - interval: 1min
     then:
       - if:
@@ -214,7 +215,7 @@ interval:
           then:
             - switch.turn_off: boost_switch
             - logger.log:
-                format: "Boiler temperature reached %.1f°C. Turning off boost."
+                format: "Boiler temperature reached %.1fÂ°C. Turning off boost."
                 args:
                   - id(boiler_temp).state
                 level: WARN
@@ -305,7 +306,7 @@ script:
           else:
           - logger.log:
               level: WARN
-              format: "Booster heating blocked (%.1f°C)"
+              format: "Booster heating blocked (%.1fÂ°C)"
               args: [ id(boiler_temp).state ]
           - switch.turn_off: boost_switch
 

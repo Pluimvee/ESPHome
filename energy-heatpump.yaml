@@ -9,6 +9,7 @@ substitutions:
   build_root: !secret build_root
   update_power: 3s
   update_interval: 10s
+  friendly_name: Energy Meter Heatpump
 
 packages:
   wifi: !include wifi.yaml
@@ -17,7 +18,7 @@ packages:
 esphome:
   name: ${device_id}
   build_path: ${build_root}/${device_id}
-  friendly_name: Energy Meter Heatpump
+  friendly_name: ${friendly_name}
   project:
     name: 'EcoGrid.Energy meter EARU mod (DIN Latching)'
     version: ${version}

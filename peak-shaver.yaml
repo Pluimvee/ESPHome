@@ -1,9 +1,10 @@
-# Copyright (c) 2026 Pluimvee
+﻿# Copyright (c) 2026 Pluimvee
 # Peak shaving controller for Solis inverter
 
 substitutions:
   device_id: "peak-shaver"
   build_root: !secret build_root
+  friendly_name: Solis Peak Shaver
 
 packages:
   wifi: !include wifi.yaml
@@ -12,7 +13,7 @@ packages:
 esphome:
   name: ${device_id}
   build_path: ${build_root}/${device_id}
-  friendly_name: Solis Peak Shaver
+  friendly_name: ${friendly_name}
   project:
     name: 'EcoGrid.Solis Peak Shaver'
     version: ${version}
