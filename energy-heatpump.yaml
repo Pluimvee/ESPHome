@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Pluimvee
+﻿# Copyright (c) 2026 Pluimvee
 # Energy meter used for the EV Charger
 # EARU DIN MODULE
 
@@ -11,6 +11,7 @@ substitutions:
   update_interval: 10s
 
 packages:
+  wifi: !include wifi.yaml
   version: !include version.yaml
 
 esphome:
@@ -18,7 +19,7 @@ esphome:
   build_path: ${build_root}/${device_id}
   friendly_name: Energy Meter Heatpump
   project:
-    name: 'EcoGrid.Energy meter EARU mod (DIN module)'
+    name: 'EcoGrid.Energy meter EARU mod (DIN Latching)'
     version: ${version}
 
 esp8266:
@@ -30,7 +31,7 @@ preferences:
 
 # Enable logging
 logger:
-  level: DEBUG
+  level: INFO
   baud_rate: 0
 
 # Enable Home Assistant API
@@ -43,16 +44,6 @@ ota:
   - platform: esphome
     password: !secret ota_password
 
-wifi:
-  ssid: !secret wifi_ssid
-  password: !secret wifi_password
-
-# Enable fallback hotspot (captive portal) in case wifi connection fails
-  ap:
-    ssid: "DIN EARU Hotspot"
-    password: !secret wifi_ap_password
-
-captive_portal:
 
 # Enable web server for debugging and control
 web_server:
@@ -130,21 +121,21 @@ sensor:
       accuracy_decimals: 0
       filters:
         - throttle_average: ${update_power}
-    apparent_power:
-      name: "Apparent Power"
-      accuracy_decimals: 0
-      filters:
-        - throttle_average: ${update_power}
-    reactive_power:
-      name: "Reactive Power"
-      accuracy_decimals: 0
-      filters:
-        - throttle_average: ${update_power}
-    power_factor:
-      name: "Power Factor"
-      accuracy_decimals: 2
-      filters:
-        - throttle_average: ${update_interval}
+    # apparent_power:
+    #   name: "Apparent Power"
+    #   accuracy_decimals: 0
+    #   filters:
+    #     - throttle_average: ${update_power}
+    # reactive_power:
+    #   name: "Reactive Power"
+    #   accuracy_decimals: 0
+    #   filters:
+    #     - throttle_average: ${update_power}
+    # power_factor:
+    #   name: "Power Factor"
+    #   accuracy_decimals: 2
+    #   filters:
+    #     - throttle_average: ${update_interval}
     energy:
       id: energy_since_boot
       internal: true

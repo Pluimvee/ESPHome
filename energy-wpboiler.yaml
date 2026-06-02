@@ -9,6 +9,7 @@ substitutions:
   build_root: !secret build_root
 
 packages:
+  wifi: !include wifi.yaml
   version: !include version.yaml
 
 esphome:
@@ -40,17 +41,6 @@ api:
 ota:
   - platform: esphome
     password: !secret ota_password
-
-wifi:
-  ssid: !secret wifi_ssid
-  password: !secret wifi_password
-  min_auth_mode: WPA2
-  # Enable fallback hotspot (captive portal) in case wifi connection fails
-  ap:
-    ssid: "PowerPlug Hotspot"
-    password: !secret wifi_ap_password
-
-captive_portal:
 
 # Enable web server for debugging and control
 web_server:

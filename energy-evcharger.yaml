@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Pluimvee
+﻿# Copyright (c) 2026 Pluimvee
 # Energy meter used for the EV Charger
 # EARU DIN MODULE
 
@@ -9,6 +9,7 @@ substitutions:
   build_root: !secret build_root
 
 packages:
+  wifi: !include wifi.yaml
   version: !include version.yaml
 
 esphome:
@@ -16,7 +17,7 @@ esphome:
   build_path: ${build_root}/${device_id}
   friendly_name: EV Charger Mains
   project:
-    name: 'EcoGrid.DIN Latching Switch & Energy AT/TUYA mod'
+    name: 'EcoGrid.Energy meter AT/TUYA mod (DIN Latching)'
     version: ${version}
 
 esp8266:
@@ -41,16 +42,6 @@ ota:
   - platform: esphome
     password: !secret ota_password
 
-wifi:
-  ssid: !secret wifi_ssid
-  password: !secret wifi_password
-  min_auth_mode: WPA2
-# Enable fallback hotspot (captive portal) in case wifi connection fails
-  ap:
-    ssid: "EV Mains Hotspot"
-    password: !secret wifi_ap_password
-
-captive_portal:
 
 # Enable web server for debugging and control
 web_server:

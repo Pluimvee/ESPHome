@@ -6,6 +6,7 @@ substitutions:
   build_root: !secret build_root
 
 packages:
+  wifi: !include wifi.yaml
   version: !include version.yaml
 
 esphome:
@@ -42,17 +43,6 @@ ota:
 
 mdns:
   disabled: false
-
-wifi:
-  ssid: !secret wifi_ssid
-  password: !secret wifi_password
-  fast_connect: true
-  power_save_mode: none
-  ap:
-    ssid: "Peak Shaver Hotspot"
-    password: !secret wifi_ap_password
-
-captive_portal:
 
 web_server:
     port: 80

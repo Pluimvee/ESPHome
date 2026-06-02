@@ -8,6 +8,7 @@ substitutions:
   build_root: !secret build_root
 
 packages:
+  wifi: !include wifi.yaml
   version: !include version.yaml
 
 esphome:
@@ -47,29 +48,6 @@ api:
 ota:
   - platform: esphome
     password: !secret ota_password
-
-wifi:
-  ssid: !secret wifi_ssid
-  password: !secret wifi_password
-  ap:
-    ssid: Thermostat Fallback
-    password: !secret wifi_ap_password
-  on_connect:
-    - lvgl.label.update:
-        id: lbl_wifi_status
-        text: "W+"
-    - lvgl.label.update:
-        id: lbl_status_wifi
-        text: "verbonden"
-  on_disconnect:
-    - lvgl.label.update:
-        id: lbl_wifi_status
-        text: "W-"
-    - lvgl.label.update:
-        id: lbl_status_wifi
-        text: "offline"
-
-captive_portal:
 
 time:
   - platform: homeassistant

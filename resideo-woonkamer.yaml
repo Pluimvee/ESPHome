@@ -9,5 +9,6 @@ substitutions:
   humidity_offset: '-3.5'
 
 packages:
+  wifi: !include wifi.yaml
   version: !include version.yaml
   base: !include resideo-base.yaml

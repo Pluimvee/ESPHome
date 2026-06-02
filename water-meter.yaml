@@ -1,4 +1,4 @@
-# Copyright (c) 2025 Pluimvee
+﻿# Copyright (c) 2025 Pluimvee
 # Water meter ESPHome configuration 
 
 # First some basic configuration
@@ -7,9 +7,10 @@ substitutions:
   device_id: water-meter
   build_root: !secret build_root
   pulse_fraction: 0.450 # the fraction between uppulse and down-pulse for each turn (which is 1ltr)
-  calibrate_total: '3091.8232' # the total water used in m³ at the moment of flashing (for correct total usage)
+  calibrate_total: '3091.8232' # the total water used in mÂ³ at the moment of flashing (for correct total usage)
 
 packages:
+  wifi: !include wifi.yaml
   version: !include version.yaml
 
 esphome:
@@ -47,16 +48,6 @@ ota:
   - platform: esphome
     password: !secret ota_password
 
-wifi:
-  ssid: !secret wifi_ssid
-  password: !secret wifi_password
-  min_auth_mode: WPA2
-# Enable fallback hotspot (captive portal) in case wifi connection fails
-  ap:
-    ssid: "Watermeter Fallback Hotspot"
-    password: !secret wifi_ap_password
-
-captive_portal:
 
 # Enable web server for debugging and control
 web_server:
@@ -124,7 +115,7 @@ sensor:
   - platform: template
     name: "Total"
     id: total
-    unit_of_measurement: "m³"
+    unit_of_measurement: "mÂ³"
     state_class: total_increasing # Use total_increasing to only accept increasing values
     device_class: water
     icon: "mdi:water-plus"

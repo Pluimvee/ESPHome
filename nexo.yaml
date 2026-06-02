@@ -54,16 +54,8 @@ ota:
   - platform: esphome
     password: !secret ota_password
 
-wifi:
-  ssid: !secret wifi_ssid
-  password: !secret wifi_password
-  ap:
-    ssid: "Nexo Fallback"
-    password: !secret wifi_ap_password
-
-captive_portal:
-
 packages:
+  wifi: !include wifi.yaml
   version: !include version.yaml
   lvgl_ui: !include nexo_lvgl.yaml
 

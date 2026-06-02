@@ -1,4 +1,4 @@
-# Copyright (c) 2025 Pluimvee
+﻿# Copyright (c) 2025 Pluimvee
 # Smart Meter reader using P1 port of the meter
 
 # First some basic configuration
@@ -8,6 +8,7 @@ substitutions:
   build_root: !secret build_root
 
 packages:
+  wifi: !include wifi.yaml
   version: !include version.yaml
 
 esphome:
@@ -40,16 +41,6 @@ ota:
   - platform: esphome
     password: !secret ota_password
 
-wifi:
-  ssid: !secret wifi_ssid
-  password: !secret wifi_password
-  min_auth_mode: WPA2
-# Enable fallback hotspot (captive portal) in case wifi connection fails
-  ap:
-    ssid: "EcoGrid P1 Hotspot"
-    password: !secret wifi_ap_password
-
-captive_portal:
 
 # # Enable web server for debugging and control
 web_server:
@@ -89,7 +80,7 @@ p1_dsmr:
     # gas consumption
     - obis: "0-1:24.2.1"
       name: "Gas Consumed"
-      unit_of_measurement: "m³"
+      unit_of_measurement: "mÂ³"
       device_class: energy
       state_class: total_increasing
       accuracy_decimals: 3
