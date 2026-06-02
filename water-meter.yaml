@@ -6,6 +6,8 @@
 substitutions:
   device_id: water-meter
   build_root: !secret build_root
+  pulse_fraction: 0.450 # the fraction between uppulse and down-pulse for each turn (which is 1ltr)
+  calibrate_total: '3091.8232' # the total water used in m³ at the moment of flashing (for correct total usage)
 
 esphome:
   name: ${device_id}
@@ -13,7 +15,7 @@ esphome:
   friendly_name: Water Meter
   project:
     name: 'EcoGrid.Connect - Water meter'
-    version: Jan 11 2026
+    version: May 15 2026
   on_boot:
     priority: -100  # Zorgt dat dit als laatste gebeurt (na WiFi, tijd, etc.)
     then:
@@ -21,7 +23,7 @@ esphome:
           id(last_pulse_time) = millis();  // Initialize last pulse time
 
 esp8266:
-  board: esp01_1m # in werkelijkheid is het eigenlijk een esp12e of d1_mini, maar OTA kan een wijziging bricken
+  board: esp12e
   restore_from_flash: true
 
 preferences:
@@ -70,12 +72,12 @@ globals:
   - id: water_used_total
     type: float
     restore_value: yes # Restore from persistent storage
-    initial_value: '3024.8176'
+    initial_value: ${calibrate_total}
 
   - id: water_used_today
     type: float
     restore_value: no # Do not persist flash read/writes is limited (100k)
-    initial_value: '53.56'
+    initial_value: '0.0'
 
   - id: water_flow
     type: float
@@ -89,8 +91,18 @@ globals:
     type: uint32_t
     initial_value: '0'
 
+# temperary button for calibration of the total, can be removed after use
+# button:
+#   - platform: template
+#     name: "Reset Total to Calibration"
+#     on_press:
+#       - lambda: |-
+#           id(water_used_total) = ${calibrate_total};
+#           id(total).publish_state(id(water_used_total));
+#           global_preferences->sync();
+
 script:
-  - id: delayed_save 
+  - id: delayed_save
     mode: restart
     then:
       - delay: 10s
@@ -153,8 +165,8 @@ binary_sensor:
     on_press:
       - lambda: |-
           uint32_t now = millis();
-          id(water_used_total) += 0.435 / 1000.0;   // 0.33 L, convert to m³
-          id(water_used_today) += 0.435;
+          id(water_used_total) += ${pulse_fraction} / 1000.0;   
+          id(water_used_today) += ${pulse_fraction};
           id(total).publish_state(id(water_used_total));
           id(today).publish_state(id(water_used_today));
 
@@ -167,23 +179,24 @@ binary_sensor:
           // now has the current on_press
           uint32_t on_cycle_time = now - id(last_pulse_time);
 
-          // Calculate the pulse fraction
-          float pulse_fraction = (float)on_cycle_time / (float)cycle_time;
-          ESP_LOGI("water_meter", "Pulse fraction: %0.4f, Cycle time: %d ms, On cycle time: %d ms", pulse_fraction, cycle_time, on_cycle_time);
+          // Calculate the pulse fraction (which is the time_on / total cycle time)
+          // a total cycle time reflects 1ltr of water, and the on_cycle_time reflects the fraction of that cycle that is on
+          float fraction = (float)on_cycle_time / (float)cycle_time;
+          ESP_LOGI("water_meter", "Pulse fraction: %0.4f, Cycle time: %d ms, On cycle time: %d ms", fraction, cycle_time, on_cycle_time);
 
-          id(water_flow) = (0.435 * 60000) / (now - id(last_pulse_time));
+          id(water_flow) = (${pulse_fraction} * 60000) / (now - id(last_pulse_time));
           id(last_pulse_time) = now;
           id(last_rising_time) = now;
       - script.execute: delayed_save
     on_release:
       - lambda: |-
           uint32_t now = millis();
-          id(water_used_total) += 0.565 / 1000.0;   // 0.67 L, convert to m³
-          id(water_used_today) += 0.565;
+          id(water_used_total) += (1-${pulse_fraction}) / 1000.0;   
+          id(water_used_today) += (1 - ${pulse_fraction});
           id(total).publish_state(id(water_used_total));
           id(today).publish_state(id(water_used_today));
 
-          id(water_flow) = (0.565 * 60000) / (now - id(last_pulse_time));
+          id(water_flow) = ((1 - ${pulse_fraction}) * 60000) / (now - id(last_pulse_time));
           id(last_pulse_time) = now;
       - script.execute: delayed_save
 
