@@ -11,9 +11,12 @@ esphome:
   name: ${device_id}
   build_path: ${build_root}/${device_id}  
   friendly_name: EV Charger Control
+  project:
+    name: 'EcoGrid.EV Charger Control'
+    version: Jun 2 2026
 
 esp8266:
-  board: esp01_1m
+  board: esp12e
 
 # Enable logging
 logger:

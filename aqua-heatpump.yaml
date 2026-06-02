@@ -11,9 +11,12 @@ esphome:
   name: ${device_id}
   friendly_name: Warmtepomp boiler
   build_path: ${build_root}/${device_id}  
+  project:
+    name: 'EcoGrid.Waterboiler heatpump and central ventilation control'
+    version: Jun 2 2026
 
 esp8266:
-  board: esp01_1m
+  board: esp12e
 
 # Enable Home Assistant API
 # LOCATED BELOW AS WE DEFINED SOME SERVICES

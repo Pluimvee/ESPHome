@@ -13,10 +13,10 @@ esphome:
   friendly_name: ModBus Bridge
   project:
     name: 'EcoGrid.ModBus TCP-RTU Bridge'
-    version: May 10 2026
+    version: Jun 2 2026
 
 esp8266:
-  board: esp01_1m
+  board: esp12e
 
 # Enable Home Assistant API
 api:
@@ -52,7 +52,8 @@ web_server:
 
 # Some special code to allow the ESPHome Modbus TCP-RTU bridge to work
 external_components:
-  - source: github://Pluimvee/esphome-modbus-tcp-to-rtu
+  - source: C:/Users/erikv/OneDrive/Archive/Erik/Hobby/ESPHome/components/esphome-modbus-tcp-to-rtu/components
+#  - source: github://Pluimvee/esphome-modbus-tcp-to-rtu
     refresh: 1min
 
 # UART configuration for MAX485
@@ -65,12 +66,39 @@ uart:
 #  debug:
 
 modbus_bridge:
+   id: bridge
    uart_id: modbus
    port: 502
    buffer_size: 256
    timeout: 3000
+   inject_unit_id: 1
+   inject_interval: 200
 
-#and some sensors to monitor the bridge itself   
+switch:
+  - platform: template
+    name: "Modbus Injection"
+    id: modbus_injection
+    icon: "mdi:transmission-tower"
+    optimistic: true
+    turn_on_action:
+      - lambda: "id(bridge).set_modbus_injection(true);"
+    turn_off_action:
+      - lambda: "id(bridge).set_modbus_injection(false);"
+
+number:
+  - platform: template
+    name: "Modbus Injection Power"
+    id: modbus_injection_power
+    icon: "mdi:lightning-bolt"
+    unit_of_measurement: W
+    min_value: -10000
+    max_value: 10000
+    step: 1
+    optimistic: true
+    set_action:
+      - lambda: "id(bridge).set_inject_power(x);"
+
+#and some sensors to monitor the bridge itself
 binary_sensor:
   - platform: modbus_bridge
     connected:

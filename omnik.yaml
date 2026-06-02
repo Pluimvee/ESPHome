@@ -8,7 +8,7 @@ substitutions:
   build_root: !secret build_root
   # 19.03 MWh uit Solarman met ingangsdatum 10 dec 2012 en laatste update 8 nov 2023
   # + geschatte missende periode dec 2023 t/m 11 feb 2026 obv HA statistieken (dmv codex)
-  min_total_kwh: "22790.0"
+  min_total_kwh: "23566.0"
 
 esphome:
   name: ${device_id}
@@ -28,7 +28,7 @@ esphome:
           id(energy_total_sensor).publish_state(id(energy_total));
 
 esp8266:
-  board: esp01_1m
+  board: esp12e
   restore_from_flash: true
 
 preferences:
