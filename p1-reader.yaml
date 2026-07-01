@@ -81,8 +81,8 @@ p1_dsmr:
     # gas consumption
     - obis: "0-1:24.2.1"
       name: "Gas Consumed"
-      unit_of_measurement: "mÂ³"
-      device_class: energy
+      unit_of_measurement: "m³"
+      device_class: gas
       state_class: total_increasing
       accuracy_decimals: 3
       icon: "mdi:meter-gas"
@@ -558,22 +558,19 @@ sensor:
     icon: "mdi:counter"
     unit_of_measurement: "kWh"
     device_class: energy
-    state_class: total_increasing
+    state_class: total
     accuracy_decimals: 3
     update_interval: 60s
     filters:
       - delta: 0.01
     lambda: |-
       float value = 0.0;
-      if (!isnan(id(energy_import_t1).state))
-        value += id(energy_import_t1).state;
-      if (!isnan(id(energy_import_t2).state))
-        value += id(energy_import_t2).state;
-      if (!isnan(id(energy_export_t1).state))
-        value -= id(energy_export_t1).state;
-      if (!isnan(id(energy_export_t2).state))
-        value -= id(energy_export_t2).state;
-      return value;
+      bool has_data = false;
+      if (!isnan(id(energy_import_t1).state)) { value += id(energy_import_t1).state; has_data = true; }
+      if (!isnan(id(energy_import_t2).state)) { value += id(energy_import_t2).state; has_data = true; }
+      if (!isnan(id(energy_export_t1).state)) { value -= id(energy_export_t1).state; has_data = true; }
+      if (!isnan(id(energy_export_t2).state)) { value -= id(energy_export_t2).state; has_data = true; }
+      return has_data ? value : NAN;
 
   - platform: template
     name: "Electricity Import"
@@ -587,11 +584,10 @@ sensor:
       - delta: 0.01
     lambda: |-
       float value = 0.0;
-      if (!isnan(id(energy_import_t1).state))
-        value += id(energy_import_t1).state;
-      if (!isnan(id(energy_import_t2).state))
-        value += id(energy_import_t2).state;
-      return value;
+      bool has_data = false;
+      if (!isnan(id(energy_import_t1).state)) { value += id(energy_import_t1).state; has_data = true; }
+      if (!isnan(id(energy_import_t2).state)) { value += id(energy_import_t2).state; has_data = true; }
+      return has_data ? value : NAN;
 
   - platform: template
     name: "Electricity Export"
@@ -605,8 +601,7 @@ sensor:
       - delta: 0.01
     lambda: |-
       float value = 0.0;
-      if (!isnan(id(energy_export_t1).state))
-        value += id(energy_export_t1).state;
-      if (!isnan(id(energy_export_t2).state))
-        value += id(energy_export_t2).state;
-      return value;
+      bool has_data = false;
+      if (!isnan(id(energy_export_t1).state)) { value += id(energy_export_t1).state; has_data = true; }
+      if (!isnan(id(energy_export_t2).state)) { value += id(energy_export_t2).state; has_data = true; }
+      return has_data ? value : NAN;

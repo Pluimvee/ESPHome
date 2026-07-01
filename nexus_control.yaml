@@ -1,0 +1,718 @@
+# Copyright (c) 2026 Pluimvee
+# Nexus Control - Solis S6-EH3P battery EMS controller via Modbus TCP
+
+substitutions:
+  device_id: nexus-control
+  build_root: !secret build_root
+  friendly_name: Nexus Control
+
+packages:
+  wifi: !include wifi.yaml
+  version: !include version.yaml
+
+esphome:
+  name: ${device_id}
+  build_path: ${build_root}/${device_id}
+  friendly_name: ${friendly_name}
+  project:
+    name: 'EcoGrid.Nexus Control'
+    version: ${version}
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+logger:
+  level: INFO
+  baud_rate: 0
+  logs:
+    sensor: WARN
+    modbus_controller.sensor: WARN
+    modbus_controller: ERROR
+
+api:
+  encryption:
+    key: !secret api_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+mdns:
+  disabled: false
+
+web_server:
+  port: 80
+  version: 3
+
+uart:
+  - id: uart_rs485
+    rx_pin: GPIO16
+    tx_pin: GPIO17
+    baud_rate: 9600
+    data_bits: 8
+    parity: NONE
+    stop_bits: 1
+    rx_buffer_size: 512
+
+modbus:
+  - id: rs485
+    uart_id: uart_rs485
+
+modbus_controller:
+  - id: solis
+    address: 1
+    modbus_id: rs485
+    update_interval: 1s
+    setup_priority: -10
+    command_throttle: 750ms
+
+globals:
+  - id: target_soc_deadline_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+
+  # Grid metrics tumbling-window globals (15 min, reset after publish)
+  - id: g_grid_sum
+    type: float
+    restore_value: false
+    initial_value: '0.0'
+  - id: g_grid_min
+    type: float
+    restore_value: false
+    initial_value: '0.0'
+  - id: g_grid_max
+    type: float
+    restore_value: false
+    initial_value: '0.0'
+  - id: g_grid_count
+    type: int
+    restore_value: false
+    initial_value: '0'
+  - id: g_grid_crossings
+    type: int
+    restore_value: false
+    initial_value: '0'
+  - id: g_grid_prev_zone
+    type: int
+    restore_value: false
+    initial_value: '0'
+  - id: g_grid_median_buf
+    type: std::vector<float>
+    restore_value: false
+  # Histogram buckets (delta = grid − target): <-500 | -500:-100 | -100:-50 | -50:-20 | -20:20 | 20:50 | 50:100 | 100:500 | >500
+  - id: g_hist_0
+    type: int
+    restore_value: false
+    initial_value: '0'
+  - id: g_hist_1
+    type: int
+    restore_value: false
+    initial_value: '0'
+  - id: g_hist_2
+    type: int
+    restore_value: false
+    initial_value: '0'
+  - id: g_hist_3
+    type: int
+    restore_value: false
+    initial_value: '0'
+  - id: g_hist_4
+    type: int
+    restore_value: false
+    initial_value: '0'
+  - id: g_hist_5
+    type: int
+    restore_value: false
+    initial_value: '0'
+  - id: g_hist_6
+    type: int
+    restore_value: false
+    initial_value: '0'
+  - id: g_hist_7
+    type: int
+    restore_value: false
+    initial_value: '0'
+  - id: g_hist_8
+    type: int
+    restore_value: false
+    initial_value: '0'
+
+sensor:
+  - platform: wifi_signal
+    name: "WiFi Signal Strength"
+    icon: "mdi:wifi"
+    update_interval: 60s
+
+  # Reading the register block 33139-33152 as one FC04 every 5s
+  - platform: modbus_controller
+    modbus_controller_id: solis
+    id: battery_soc
+    name: "Battery SOC"
+    icon: "mdi:battery-medium"
+    register_type: read
+    address: 33139
+    value_type: U_WORD
+    unit_of_measurement: "%"
+    device_class: battery
+    state_class: measurement
+    accuracy_decimals: 0
+    skip_updates: 5
+
+  # Bridge register at 33143 closes the gap 33139→33147 (gap=8 > default batch threshold)
+  - platform: modbus_controller
+    modbus_controller_id: solis
+    id: _gap_33143
+    register_type: read
+    address: 33143
+    value_type: U_WORD
+    accuracy_decimals: 0
+    internal: true
+    skip_updates: 5
+
+  - platform: modbus_controller
+    modbus_controller_id: solis
+    id: house_load
+    name: "House Load"
+    icon: "mdi:home-lightning-bolt"
+    register_type: read
+    address: 33147
+    value_type: U_WORD
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+    skip_updates: 5
+
+  # S32 register (33151+33152), unit W; + = discharge, - = charge
+  - platform: modbus_controller
+    modbus_controller_id: solis
+    id: grid_port_power
+    name: "Inverter Power"
+    icon: "mdi:lightning-bolt-circle"
+    register_type: read
+    address: 33151
+    value_type: S_DWORD
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+    skip_updates: 5
+    on_value:
+      then:
+        - text_sensor.template.publish:
+            id: controller_mode_sensor
+            state: !lambda |-
+              if (x > 150.0f) return std::string("discharging");
+              if (x < -150.0f) return std::string("charging");
+              return std::string("standby");
+
+  # Internal 1Hz grid meter reader — accumulates metrics, does NOT publish raw to HA recorder
+  # HA-visible throttled copy is the meter_power template sensor below
+  - platform: modbus_controller
+    modbus_controller_id: solis
+    id: meter_power_raw
+    internal: true
+    register_type: read
+    address: 33263
+    value_type: S_DWORD
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+    skip_updates: 1
+    # Solis convention (export +, import -) → house convention (import +, export -)
+    filters:
+      - multiply: -1.0
+    on_value:
+      then:
+        - lambda: |-
+            float v = x;
+
+            // Min / max / sum / count
+            if (id(g_grid_count) == 0) {
+              id(g_grid_min) = v;
+              id(g_grid_max) = v;
+            } else {
+              if (v < id(g_grid_min)) id(g_grid_min) = v;
+              if (v > id(g_grid_max)) id(g_grid_max) = v;
+            }
+            id(g_grid_sum) = id(g_grid_sum) + v;
+            id(g_grid_count) = id(g_grid_count) + 1;
+
+            // Buffer raw value for median (sorted at publish time)
+            id(g_grid_median_buf).push_back(v);
+
+            // Histogram: 9 buckets on delta = grid − target, boundaries at ±20/50/100/500 W
+            float tgt = id(target_grid_number).has_state() ? id(target_grid_number).state : 0.0f;
+            float d = v - tgt;
+            if      (d <  -500.0f) id(g_hist_0) = id(g_hist_0) + 1;
+            else if (d <  -100.0f) id(g_hist_1) = id(g_hist_1) + 1;
+            else if (d <   -50.0f) id(g_hist_2) = id(g_hist_2) + 1;
+            else if (d <   -20.0f) id(g_hist_3) = id(g_hist_3) + 1;
+            else if (d <=   20.0f) id(g_hist_4) = id(g_hist_4) + 1;
+            else if (d <=   50.0f) id(g_hist_5) = id(g_hist_5) + 1;
+            else if (d <=  100.0f) id(g_hist_6) = id(g_hist_6) + 1;
+            else if (d <=  500.0f) id(g_hist_7) = id(g_hist_7) + 1;
+            else                   id(g_hist_8) = id(g_hist_8) + 1;
+
+            // Zero-crossing detection with ±20W dead-band
+            // zone: -1=export, 0=dead-band, 1=import; crossing only on import↔export flip
+            int zone = (v > 20.0f) ? 1 : (v < -20.0f ? -1 : 0);
+            int prev = id(g_grid_prev_zone);
+            if (prev != 0 && zone != 0 && zone != prev) {
+              id(g_grid_crossings) = id(g_grid_crossings) + 1;
+            }
+            if (zone != 0) id(g_grid_prev_zone) = zone;
+
+  # Grid Power — HA-visible, 5s update; drives grid_status text sensor
+  - platform: template
+    id: meter_power
+    name: "Grid Power"
+    icon: "mdi:meter-electric"
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: return id(meter_power_raw).state;
+    on_value:
+      then:
+        - text_sensor.template.publish:
+            id: grid_status_sensor
+            state: !lambda |-
+              if (x > 50.0f) return std::string("import");
+              if (x < -50.0f) return std::string("export");
+              return std::string("level");
+
+  # Grid metrics — published every 15 min by publish_grid_metrics script
+  - platform: template
+    id: grid_metric_min_w
+    name: "Grid Metric Min"
+    icon: "mdi:arrow-collapse-down"
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: never
+
+  - platform: template
+    id: grid_metric_max_w
+    name: "Grid Metric Max"
+    icon: "mdi:arrow-collapse-up"
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: never
+
+  - platform: template
+    id: grid_metric_mean_w
+    name: "Grid Metric Mean"
+    icon: "mdi:approximately-equal"
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 1
+    update_interval: never
+
+  - platform: template
+    id: grid_metric_median_w
+    name: "Grid Metric Median"
+    icon: "mdi:approximately-equal-box"
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 1
+    update_interval: never
+
+  - platform: template
+    id: grid_metric_samples
+    name: "Grid Metric Samples"
+    icon: "mdi:counter"
+    unit_of_measurement: ""
+    state_class: total
+    accuracy_decimals: 0
+    update_interval: never
+
+  - platform: template
+    id: grid_metric_crossings
+    name: "Grid Metric Crossings"
+    icon: "mdi:transfer"
+    unit_of_measurement: ""
+    state_class: total
+    accuracy_decimals: 0
+    update_interval: never
+
+# ── HA interface  ─────────────────────────────────────────────────────
+select:
+  - platform: template
+    id: ems_mode_select
+    name: "Control Mode"
+    icon: "mdi:battery-clock"
+    options:
+      - "hold"
+      - "level"
+      - "charge"
+      - "discharge"
+    optimistic: true
+    restore_value: true
+    initial_option: "hold"
+    on_value:
+      then:
+        - lambda: id(target_soc_deadline_ms) = millis() + 3600000UL;
+        - script.execute: apply_mode
+
+text_sensor:
+  - platform: template
+    id: controller_mode_sensor
+    name: "Inverter Status"
+    icon: "mdi:state-machine"
+    update_interval: never
+
+  - platform: template
+    id: grid_status_sensor
+    name: "Grid Status"
+    icon: "mdi:transmission-tower-export"
+    update_interval: never
+
+  - platform: template
+    id: grid_metric_histogram
+    name: "Grid Metric Histogram"
+    icon: "mdi:chart-bar"
+    update_interval: never
+
+number:
+  # ── HA interface numbers ─────────────────────────────────────────────────────
+  - platform: template
+    id: target_grid_number
+    name: "Target Grid Power"
+    icon: "mdi:tune-vertical"
+    unit_of_measurement: "W"
+    device_class: power
+    min_value: -10000
+    max_value: 10000
+    step: 100
+    mode: box
+    optimistic: true
+    restore_value: true
+    initial_value: 0
+    on_value:
+      then:
+        - script.execute: apply_mode
+
+  - platform: template
+    id: target_soc_number
+    name: "Target SOC"
+    icon: "mdi:battery-arrow-up"
+    unit_of_measurement: "%"
+    min_value: 7
+    max_value: 100
+    step: 1
+    mode: box
+    optimistic: true
+    restore_value: true
+    initial_value: 80
+    on_value:
+      then:
+        - lambda: id(target_soc_deadline_ms) = millis() + 3600000UL;
+        - script.execute: apply_mode
+
+  # ── Modbus holding registers ─────────────────────────────────────────────────
+  # Waarom number en niet output of sensor?
+  #   - sensor: read-only, kan niet schrijven
+  #   - output: write-only float (0.0–1.0), niet bruikbaar voor ruwe register-integers
+  #   - number: read+write, min/max/step voor integer waarden — enige optie
+  #
+  # Timing: make_call().set_value(val).perform() schrijft op het moment dat WIJ
+  # perform() aanroepen (vanuit de 5s lambda), niet direct bij waardeverandering vanuit HA.
+  # De timing is dus volledig in eigen beheer, net als de vroegere write_reg helper.
+  #
+  # Adresblokken (ESPHome batcht aangrenzende registers in één FC03 request):
+  #   43029         → los request (gap van 81 t.o.v. 43110)
+  #   43110..43140  → één request (span 31, bevat config + RC registers)
+  #   43282         → los request
+
+  # Config registers: read every 5 min to detect drift, write when value differs
+  - platform: modbus_controller
+    modbus_controller_id: solis
+    id: ct_direction_cfg
+    register_type: holding
+    address: 43029
+    value_type: U_WORD
+    min_value: 0
+    max_value: 1
+    step: 1
+    internal: true
+    skip_updates: 300
+
+  # Solis Inverter operating mode -
+  # we use value 33 (0x0021) for self-use mode with grid feed-in allowed
+    # BIT00 Self-Use Mode 0—OFF 1—ON
+    # BIT01 Time of use mode 0—OFF 1—ON
+    # BIT02 OFF-grid mode 0—OFF 1—ON
+    # BIT03 Battery wakeup switch 0—OFF 1—ON
+    # BIT04 Reserve battery mode 0—OFF 1—ON
+    # BIT05 Allow grid to charge the battery 0—NotAllow / 1—Allow
+    # BIT06 Feed in priority mode 0—OFF 1—ON
+    # BIT07 Batt OVC Function 0—OFF 1—ON
+    # BIT08 Battery Focecharge Peakshaving Function 0—OFF 1—ON
+    # BIT09 Battery current correction enable switch 0—OFF 1—ON
+    # BIT10 Battery healing mode 0—OFF 1—ON
+    # BIT11 Peak-shaving mode 0—OFF 1—ON
+  - platform: modbus_controller
+    modbus_controller_id: solis
+    id: storage_control_switch
+    register_type: holding
+    address: 43110
+    value_type: U_WORD
+    min_value: 0
+    max_value: 65535
+    step: 1
+    internal: true
+    skip_updates: 300
+
+  # RC operation registers: written by control loop via perform(), read infrequently (skip_updates=3600)
+  # output zou semantisch beter passen (write-only) maar ondersteunt geen raw integer waarden
+  - platform: modbus_controller
+    modbus_controller_id: solis
+    id: rc_charge_power_reg
+    register_type: holding
+    address: 43136
+    value_type: U_WORD
+    min_value: 0
+    max_value: 1000
+    step: 1
+    internal: true
+    skip_updates: 3600
+
+  - platform: modbus_controller
+    modbus_controller_id: solis
+    id: rc_force_mode_reg
+    register_type: holding
+    address: 43135
+    value_type: U_WORD
+    min_value: 0
+    max_value: 3
+    step: 1
+    internal: true
+    skip_updates: 3600
+
+  - platform: modbus_controller
+    modbus_controller_id: solis
+    id: rc_grid_adj_reg
+    register_type: holding
+    address: 43132
+    value_type: U_WORD
+    min_value: 0
+    max_value: 1
+    step: 1
+    internal: true
+    skip_updates: 3600
+
+  - platform: modbus_controller
+    modbus_controller_id: solis
+    id: rc_grid_power_reg
+    register_type: holding
+    address: 43133
+    value_type: S_WORD
+    min_value: -1000
+    max_value: 1000
+    step: 1
+    internal: true
+    skip_updates: 3600
+
+  - platform: modbus_controller
+    modbus_controller_id: solis
+    id: meter_type_cfg
+    register_type: holding
+    address: 43140
+    value_type: U_WORD
+    min_value: 0
+    max_value: 65535
+    step: 1
+    internal: true
+    skip_updates: 300
+
+  - platform: modbus_controller
+    modbus_controller_id: solis
+    id: rc_timeout_reg
+    register_type: holding
+    address: 43282
+    value_type: U_WORD
+    min_value: 2
+    max_value: 30
+    step: 1
+    internal: true
+    skip_updates: 3600
+
+interval:
+  # Controleer de configuratieregisters elke 5 minuten en corrigeer indien nodig
+  - interval: 5min
+    then:
+      - lambda: |-
+          auto write_reg = [](esphome::number::Number *n, float val) {
+            n->make_call().set_value(val).perform();
+          };
+          if (!id(meter_type_cfg).has_state() || (uint16_t)id(meter_type_cfg).state != 0x0105u) {
+            ESP_LOGI("nexus", "Config: meter type → 0x0105");
+            write_reg(id(meter_type_cfg), 0x0105);
+          }
+          if (!id(ct_direction_cfg).has_state() || (uint16_t)id(ct_direction_cfg).state != 1u) {
+            ESP_LOGI("nexus", "Config: CT direction → Reversed");
+            write_reg(id(ct_direction_cfg), 1);
+          }
+          if (!id(storage_control_switch).has_state() || (uint16_t)id(storage_control_switch).state != 33u) {
+            ESP_LOGI("nexus", "Config: storage control → 33");
+            write_reg(id(storage_control_switch), 33);
+          }
+          ESP_LOGI("nexus", "Config: RC timeout → 6 min");
+          write_reg(id(rc_timeout_reg), 6);
+
+  # Herbereken het setpoint op basis van SOC-gap en resterende tijd
+  # ONLY USED FOR CHARGE/DISCHARGE MODES
+  - interval: 30s
+    then:
+      - script.execute: update_soc_setpoint
+
+  # Stuur de RC-modus opnieuw om timeout en terugval naar self-use te voorkomen
+  - interval: 3min
+    then:
+      - script.execute: apply_mode
+
+  # Publiceer grid metrics en reset venster elke 15 minuten
+  - interval: 15min
+    then:
+      - script.execute: publish_grid_metrics
+
+script:
+  - id: apply_mode
+    then:
+      - lambda: |-
+          auto write_reg = [](esphome::number::Number *n, float val) {
+            n->make_call().set_value(val).perform();
+          };
+          std::string mode = id(ems_mode_select).current_option();
+          float tgt_w = id(target_grid_number).state;
+
+          // Hold mode: force RC mode, zero charge power, no grid adjustment
+          if (mode == "hold") {
+            id(target_soc_deadline_ms) = 0;
+            write_reg(id(rc_charge_power_reg), 0);
+            write_reg(id(rc_force_mode_reg), 1);
+            ESP_LOGI("nexus", "Hold mode");
+            return;
+          }
+          // Level(0) -> Self-use mode
+          if (mode == "level" && tgt_w == 0.0f) {
+            id(target_soc_deadline_ms) = 0;
+            write_reg(id(rc_grid_adj_reg), 0);    // disable RC grid_adjustement
+            write_reg(id(rc_force_mode_reg), 0);  // disable RC force mode
+            ESP_LOGI("nexus", "Self-Use mode");
+            return;
+          }
+          // level(<>0) / charge / discharge → RC Grid Adjustment on tgt_w
+          write_reg(id(rc_grid_adj_reg), 1);      // enable RC grid_adjustement
+
+          // Level mode with tgt_w <>0 -> set grid_power setpoint once every minute
+          if (mode == "level") {
+            // charge/discharge setpoint is owned by the 10s SOC interval; only level writes here
+            int16_t sp = -(int16_t)(tgt_w / 10.0f);
+            write_reg(id(rc_grid_power_reg), (float)sp);
+            ESP_LOGI("nexus", "%s mode tgt=%.0fW sp=%d", mode.c_str(), tgt_w, (int)sp);
+            return;
+          }
+          // for charge/discharge we immediately update the SOC setpoint
+          id(update_soc_setpoint).execute();
+
+  - id: update_soc_setpoint
+    then:
+      - lambda: |-
+          std::string mode = id(ems_mode_select).current_option();
+          if (mode != "charge" && mode != "discharge") return;
+
+          const float BATTERY_WH  = 20000.0f;   // 20 kWh
+          const float MAX_EXTRA_W = 10000.0f;
+
+          uint32_t now  = millis();
+          float tgt_w   = id(target_grid_number).state;
+          float soc     = id(battery_soc).has_state() ? id(battery_soc).state : -1.0f;
+          float tgt_soc = id(target_soc_number).state;
+
+          float soc_gap = 0.0f;
+          if (soc >= 0.5f) {
+            if (mode == "charge")    soc_gap = std::max(0.0f, tgt_soc - soc);
+            if (mode == "discharge") soc_gap = std::max(0.0f, soc - tgt_soc);
+          }
+          if (soc_gap <= 0.0f) return;
+
+          uint32_t deadline = std::max(id(target_soc_deadline_ms), now + 300000UL);
+          float remaining   = (deadline - now) / 3600000.0f;
+          float extra_w     = std::min((soc_gap / 100.0f) * BATTERY_WH / remaining, MAX_EXTRA_W);
+
+          // charge: more import (tgt_w + extra_w), discharge: more export (tgt_w - extra_w)
+          float adjusted_w = tgt_w;
+          if (mode == "charge")    adjusted_w += extra_w;
+          if (mode == "discharge") adjusted_w -= extra_w;
+
+          // 43133 convention is inverse of HA: positive = export, negative = import
+          int16_t sp = -(int16_t)(adjusted_w / 10.0f);
+          id(rc_grid_power_reg).make_call().set_value((float)sp).perform();
+
+          ESP_LOGI("nexus", "%s tgt=%.0fW extra=%.0fW adj=%.0fW sp=%d soc=%.0f%%/%.0f%%",
+                    mode.c_str(), tgt_w, extra_w, adjusted_w, (int)sp, soc, tgt_soc);
+
+  - id: publish_grid_metrics
+    then:
+      - lambda: |-
+          int n = id(g_grid_count);
+
+          // Mean
+          float mean_v = (n > 0) ? (id(g_grid_sum) / (float)n) : 0.0f;
+
+          // Median: sort a copy of the buffer, take middle element
+          float median_v = 0.0f;
+          if (n > 0) {
+            std::vector<float> sorted_buf = id(g_grid_median_buf);
+            std::sort(sorted_buf.begin(), sorted_buf.end());
+            int sz = (int)sorted_buf.size();
+            median_v = (sz % 2 == 0)
+              ? (sorted_buf[sz / 2 - 1] + sorted_buf[sz / 2]) / 2.0f
+              : sorted_buf[sz / 2];
+          }
+
+          // Histogram JSON (bucket boundaries: ±100/300/500/1000 W)
+          char hist[256];
+          snprintf(hist, sizeof(hist),
+            "{\"gt500\":%d,\"100:500\":%d,\"50:100\":%d,\"20:50\":%d,"
+            "\"-20:20\":%d,\"-50:-20\":%d,\"-100:-50\":%d,\"-500:-100\":%d,\"lt-500\":%d}",
+            id(g_hist_8), id(g_hist_7), id(g_hist_6), id(g_hist_5), id(g_hist_4),
+            id(g_hist_3), id(g_hist_2), id(g_hist_1), id(g_hist_0));
+
+          // Publish
+          id(grid_metric_min_w).publish_state(n > 0 ? id(g_grid_min) : NAN);
+          id(grid_metric_max_w).publish_state(n > 0 ? id(g_grid_max) : NAN);
+          id(grid_metric_mean_w).publish_state(mean_v);
+          id(grid_metric_median_w).publish_state(median_v);
+          id(grid_metric_samples).publish_state((float)n);
+          id(grid_metric_crossings).publish_state((float)id(g_grid_crossings));
+          id(grid_metric_histogram).publish_state(std::string(hist));
+
+          ESP_LOGI("nexus", "Grid metrics n=%d min=%.0f max=%.0f mean=%.1f median=%.1f cross=%d",
+            n, (n > 0 ? id(g_grid_min) : 0.0f), (n > 0 ? id(g_grid_max) : 0.0f),
+            mean_v, median_v, id(g_grid_crossings));
+
+          // Reset window
+          // Note: in ESPHOme there are no race conditions on globals, so we can safely reset them here without locking
+          id(g_grid_sum) = 0.0f;
+          id(g_grid_min) = 0.0f;
+          id(g_grid_max) = 0.0f;
+          id(g_grid_count) = 0;
+          id(g_grid_crossings) = 0;
+          id(g_grid_prev_zone) = 0;
+          id(g_grid_median_buf).clear();
+          id(g_hist_0) = 0; id(g_hist_1) = 0; id(g_hist_2) = 0;
+          id(g_hist_3) = 0; id(g_hist_4) = 0; id(g_hist_5) = 0;
+          id(g_hist_6) = 0; id(g_hist_7) = 0; id(g_hist_8) = 0;

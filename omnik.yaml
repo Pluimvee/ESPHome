@@ -15,6 +15,18 @@ packages:
   wifi: !include wifi.yaml
   version: !include version.yaml
 
+# we need to connect to an AP with either channel 1 or 6 in use to have alo the AP on the same channel as the inverter AP (which is on channel 11)
+# channel 11 is not supported by Omnik firmware so an AP on this channel will not work
+wifi:
+  fast_connect: false
+  networks:
+    - ssid: !secret wifi_ssid
+      password: !secret wifi_password
+      bssid: "8a:d7:aa:ad:01:5a"   # zolder, kanaal 1, preferred AP
+    - ssid: !secret wifi_ssid
+      password: !secret wifi_password
+      bssid: "8a:d7:aa:ad:31:07"   # slaapkamer, kanaal 6
+
 esphome:
   name: ${device_id}
   friendly_name: ${friendly_name}

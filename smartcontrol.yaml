@@ -1,0 +1,454 @@
+# Copyright (c) 2026 Pluimvee
+# SmartTherm – ESP32 WROOM + ST7735 1.8" 128×160 + OpenTherm + DS18B20
+#
+# Pin mapping (drop-in vervanging ESP8266, zelfde bedrading):
+# LET OP: ESP32 MH-ET LIVE / LOLIN D1 Mini heeft andere GPIO nummers dan ESP8266!
+#   D1 pos = GPIO22 = OT In    (was D1=GPIO5  op ESP8266)
+#   D2 pos = GPIO21 = OT Out   (was D2=GPIO4  op ESP8266)
+#   D4 pos = GPIO16 = DS18B20  (was D4=GPIO2  op ESP8266) – geen LED op GPIO16
+#   D0 pos = GPIO26 = TFT DC   (was D0=GPIO16 op ESP8266)
+#   D7 pos = GPIO23 = TFT MOSI (was D7=GPIO13 op ESP8266) – VSPI
+#   D5 pos = GPIO18 = TFT CLK  (was D5=GPIO14 op ESP8266) – VSPI
+#   TFT CS = hardwarematig naar GND (permanent geselecteerd, zoals origineel)
+#   TFT RST = niet aangesloten
+#   GPIO2  = onboard LED PCB (hardwired, geen D-pin)
+
+substitutions:
+  device_id: smartcontrol
+  device_name: SmartControl
+  build_root: !secret build_root
+  friendly_name: ${device_name}
+
+packages:
+  wifi: !include wifi.yaml
+  version: !include version.yaml
+
+esphome:
+  name: ${device_id}
+  build_path: ${build_root}/${device_id}  
+  friendly_name: ${friendly_name}
+  comment: Smart Temperature Control using OpenTherm"
+  project:
+    name: 'EcoGrid.SmartTherm Control'
+    version: ${version}
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+    # advanced:
+    #   minimum_chip_revision: "3.1"
+    #   sram1_as_iram: true
+
+external_components:
+  - source:
+      type: local
+      path: ../components/esphome-climate-control/components
+  - source:
+      type: local
+      path: ../components/esphome-opentherm/components
+
+logger:
+  level: INFO
+  logs:
+    opentherm: WARN
+
+api:
+  encryption:
+    key: !secret api_key
+  on_client_connected:
+    - globals.set:
+        id: ha_connected
+        value: "true"
+  on_client_disconnected:
+    - globals.set:
+        id: ha_connected
+        value: "false"
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+web_server:
+
+time:
+  - platform: homeassistant
+    id: ha_time
+
+preferences:
+  flash_write_interval: 60s
+
+# ── SPI bus (VSPI: GPIO23=MOSI, GPIO18=CLK op ESP32 MH-ET/LOLIN) ─────────────
+spi:
+  mosi_pin: GPIO23   # D7 pos op ESP32 MH-ET/LOLIN (was GPIO13 op ESP8266)
+  clk_pin: GPIO18    # D5 pos op ESP32 MH-ET/LOLIN (was GPIO14 op ESP8266)
+
+# ── One-wire (DS18B20 op D4 pos = GPIO16 op ESP32 MH-ET/LOLIN) ────────────────
+one_wire:
+  - platform: gpio
+    pin: GPIO16
+    id: onewire_bus
+
+# ── OpenTherm ─────────────────────────────────────────────────────────────────
+opentherm:
+  in_pin: GPIO22    # D1 pos op ESP32 MH-ET/LOLIN (was GPIO5 op ESP8266)
+  out_pin: GPIO21   # D2 pos op ESP32 MH-ET/LOLIN (was GPIO4 op ESP8266)
+
+# ── Fonts (bpp:1 = geen anti-aliasing, scherp op TFT) ────────────────────────
+font:
+  - file: "gfonts://Roboto"
+    id: font_s
+    size: 10
+    bpp: 4
+    glyphs: " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~°"
+  - file: "gfonts://Roboto@500"
+    id: font_m
+    size: 18
+    bpp: 4
+    glyphs: " 0123456789.-°C%nNaA/"
+  - file: "../fonts/materialdesignicons-webfont.ttf"
+    id: font_icon_s
+    size: 12
+    bpp: 4
+    glyphs:
+      - "\U000F05A9"  # mdi:wifi
+      - "\U000F05AA"  # mdi:wifi-off
+      - "\U000F0317"  # mdi:lan-connect  (HA)
+      - "\U000F0318"  # mdi:lan-disconnect (HA off)
+      - "\U000F0003"  # mdi:access-point-network (OT)
+      - "\U000F1212"  # mdi:access-point-network-off (OT off)
+  - file: "../fonts/materialdesignicons-webfont.ttf"
+    id: font_icon_m
+    size: 30
+    bpp: 4
+    glyphs:
+      - "\U000F0238"  # mdi:fire  (heating)
+      - "\U000F0717"  # mdi:snowflake (cooling)
+      - "\U000F15A3"  # mdi:robot-off-outline (system disabled)
+
+# ── Global voor HA-verbindingsstatus ─────────────────────────────────────────
+globals:
+  - id: ha_connected
+    type: bool
+    restore_value: false
+    initial_value: "false"
+  - id: wifi_ok
+    type: bool
+    restore_value: false
+    initial_value: "false"
+
+wifi:
+  on_connect:
+    - globals.set:
+        id: wifi_ok
+        value: "true"
+  on_disconnect:
+    - globals.set:
+        id: wifi_ok
+        value: "false"
+
+# ── Display ST7735 1.8" 128×160 ───────────────────────────────────────────────
+# Scherm is 160px breed en 128px hoog na rotation:90
+# Layout (zelfde opzet als originele Arduino Display.cpp):
+#   y=  2  datum + tijd
+#   y= 15  kolomlabels rij 1  (Buiten / Kamer / Doel)
+#   y= 26  temperatuurwaarden rij 1
+#   y= 47  kolomlabels rij 2  (Aanvoer / Retour / Setpnt)
+#   y= 58  temperatuurwaarden rij 2
+#   y= 79  statuslabels        (Mod. / WiFi / HA / OT / Vlam)
+#   y= 90  statuswaarden
+display:
+  - platform: mipi_spi
+    model: ST7735
+    invert_colors: false
+    dc_pin: GPIO26    # D0 pos op ESP32 MH-ET/LOLIN (was GPIO16 op ESP8266)
+    dimensions:
+      width: 128
+      height: 160
+    rotation: 270
+    id: thermostat_display
+    update_interval: 500ms
+    lambda: |-
+      const auto C_LABEL = Color(160, 120,  80);   // warm grijs
+      const auto C_DT    = Color(200, 200, 200);   // lichtgrijs
+      const auto C_TEMP  = Color(100, 210, 130);   // groen
+      const auto C_WATER = Color( 80, 160, 210);   // blauw
+      const auto C_STAT  = Color( 80, 160, 210);   // blauw
+      const auto C_SEP   = Color( 60,  60,  60);   // donkergrijs
+
+      char tmp[16];
+      float v;
+
+      // ── Header: status icons + datum/tijd ────────────────────────────────
+      it.print( 0, 1, id(font_icon_s),
+                id(wifi_ok) ? Color(100, 210, 130) : Color(70, 70, 70),
+                id(wifi_ok) ? "\U000F05A9" : "\U000F05AA");
+      it.print(15, 1, id(font_icon_s),
+                id(ha_connected) ? Color(100, 210, 130) : Color(70, 70, 70),
+                id(ha_connected) ? "\U000F0317" : "\U000F0318");
+      it.print(30, 1, id(font_icon_s),
+                !id(ot_fault).state ? Color(100, 210, 130) : Color(255, 50, 50),
+                !id(ot_fault).state ? "\U000F0003" : "\U000F1212");
+      if (id(ha_time).now().is_valid()) {
+        char buf[24];
+        id(ha_time).now().strftime(buf, sizeof(buf), "%a %d %b");
+        it.print(47, 2, id(font_s), C_DT, buf);
+        id(ha_time).now().strftime(buf, sizeof(buf), "%H:%M");
+        it.print(122, 2, id(font_s), C_DT, buf);
+      }
+      it.horizontal_line(0, 14, 160, C_SEP);
+
+      // ── Kamer / buiten / doel ─────────────────────────────────────────────
+      it.print(  0, 17, id(font_s), C_LABEL, "Buiten");
+      it.print( 55, 17, id(font_s), C_LABEL, "Kamer");
+      it.print(115, 17, id(font_s), C_LABEL, "Doel");
+
+      v = id(climate_control_component).outside.get();
+      snprintf(tmp, sizeof(tmp), isnan(v) ? "n/a" : "%.1f\xC2\xB0", v);
+      it.print(  0, 30, id(font_m), C_TEMP, tmp);
+
+      v = id(climate_control_component).inside.get();
+      snprintf(tmp, sizeof(tmp), isnan(v) ? "n/a" : "%.1f\xC2\xB0", v);
+      it.print( 55, 30, id(font_m), C_TEMP, tmp);
+
+      snprintf(tmp, sizeof(tmp), "%.1f\xC2\xB0", id(target_temp_number).state);
+      it.print(115, 30, id(font_m), C_TEMP, tmp);
+
+      it.horizontal_line(0, 51, 160, C_SEP);
+
+      // ── Water ─────────────────────────────────────────────────────────────
+      it.print(  0, 54, id(font_s), C_LABEL, "Aanvoer");
+      it.print( 55, 54, id(font_s), C_LABEL, "Retour");
+      it.print(115, 54, id(font_s), C_LABEL, "Setpnt");
+
+      v = id(climate_control_component).inlet.get();
+      snprintf(tmp, sizeof(tmp), isnan(v) ? "n/a" : "%.1f\xC2\xB0", v);
+      it.print(  0, 67, id(font_m), C_WATER, tmp);
+
+      v = id(climate_control_component).outlet.get();
+      snprintf(tmp, sizeof(tmp), isnan(v) ? "n/a" : "%.1f\xC2\xB0", v);
+      it.print( 55, 67, id(font_m), C_WATER, tmp);
+
+      v = id(climate_control_component).setpoint.get();
+      snprintf(tmp, sizeof(tmp), isnan(v) ? "n/a" : "%.1f\xC2\xB0", v);
+      it.print(115, 67, id(font_m), C_WATER, tmp);
+
+      it.horizontal_line(0, 88, 160, C_SEP);
+
+      // ── Status: systeem uit = robot-off-outline, anders flame + snowflake ──
+      it.filled_rectangle(0, 89, 160, 39, Color::BLACK);
+      if (!id(enable_control).state) {
+        it.print(65, 91, id(font_icon_m), Color(200, 60, 60), "\U000F15A3");
+      } else {
+        it.print(25, 91, id(font_icon_m),
+                 id(ot_flame).state ? Color(255, 150, 0) : Color(60, 60, 60),
+                 "\U000F0238");
+        it.print(95, 91, id(font_icon_m),
+                 id(ot_cooling_active).state ? Color(80, 160, 210) : Color(60, 60, 60),
+                 "\U000F0717");
+      }
+
+# ── Sensors ───────────────────────────────────────────────────────────────────
+sensor:
+  - platform: dallas_temp
+    one_wire_id: onewire_bus
+    index: 0
+    name: Room Temperature Raw
+    id: ds18_room
+    internal: true
+    update_interval: 10s
+    filters:
+      - offset: -1.3
+
+  - platform: dallas_temp
+    one_wire_id: onewire_bus
+    index: 1
+    name: Board Temperature
+    id: ds18_board
+    update_interval: 60s
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+
+  - platform: opentherm
+    t_outside:
+      name: OT Outside Raw
+      id: ot_outside
+      internal: true
+    t_ret:
+      name: OT Return Raw
+      id: ot_return
+      internal: true
+    t_boiler:
+      name: OT Boiler Raw
+      id: ot_boiler
+      internal: true
+
+  - platform: climate_control
+    setpoint:
+      name: setpoint
+      trend:
+        name: setpoint trend
+    inside:
+      name: inside
+      trend:
+        name: inside trend
+    outside:
+      name: outside
+      trend:
+        name: outside trend
+    inlet:
+      name: inlet
+    outlet:
+      name: outlet
+    factor:
+      name: factor
+
+
+# ── Binary sensors ────────────────────────────────────────────────────────────
+binary_sensor:
+  - platform: opentherm
+    fault_indication:
+      name: Fault
+      id: ot_fault
+      device_class: problem
+      icon: mdi:alert-circle
+    ch_active:
+      name: CH mode
+      id: ot_ch_active
+      device_class: heat
+    dhw_active:
+      name: DHW mode
+      id: ot_dhw_active
+      device_class: running
+    flame_on:
+      name: Flame
+      id: ot_flame
+      device_class: heat
+    cooling_active:
+      name: Cooling
+      id: ot_cooling_active
+      device_class: cold
+      icon: mdi:snowflake
+
+
+# ── Schakelaars ───────────────────────────────────────────────────────────────
+switch:
+  - platform: template
+    name: Enable Control
+    id: enable_control
+    icon: mdi:power
+    restore_mode: RESTORE_DEFAULT_ON
+    optimistic: true
+
+  - platform: gpio
+    pin: GPIO2
+    name: Status LED
+    id: status_led
+    restore_mode: ALWAYS_OFF
+
+  - platform: opentherm
+    ch_enable:
+      name: Enable CH
+      id: ot_ch_enable
+      restore_mode: DISABLED
+    dhw_enable:
+      name: Enable DHW
+      id: ot_dhw_enable
+      internal: true
+      restore_mode: ALWAYS_OFF
+    cooling_enable:
+      name: Enable Cooling
+      id: ot_cooling_enable
+      restore_mode: DISABLED
+    otc_active:
+      name: Enable OTC
+      id: ot_otc_enable
+      internal: true
+      restore_mode: ALWAYS_ON
+
+# ── OpenTherm setpoint output ────────────────────────────────────────────────
+output:
+  - platform: opentherm
+    t_set:
+      id: ot_t_set_output
+      min_value: 0
+      max_value: 100
+      zero_means_zero: true
+    t_room:
+      id: ot_t_room_output
+      min_value: 0
+      max_value: 100
+    t_room_set:
+      id: ot_t_room_set_output
+      min_value: 0
+      max_value: 100
+
+# ── Instelbare parameters ─────────────────────────────────────────────────────
+number:
+  - platform: template
+    name: Target
+    id: target_temp_number
+    min_value: 18.0
+    max_value: 25.0
+    step: 0.1
+    restore_value: true
+    optimistic: true
+    mode: box
+    initial_value: 21.0
+    unit_of_measurement: "°C"
+    device_class: temperature
+
+  - platform: template
+    name: factor_outside
+    id: factor_a_number
+    min_value: 0.0
+    max_value: 1.0
+    step: 0.05
+    restore_value: true
+    optimistic: true
+    mode: box
+    initial_value: 0.65
+
+  - platform: template
+    name: factor_inside
+    id: factor_b_number
+    min_value: 0.0
+    max_value: 1.0
+    step: 0.05
+    restore_value: true
+    optimistic: true
+    mode: box
+    initial_value: 0.2
+
+  - platform: template
+    name: factor_curve
+    id: factor_c_number
+    min_value: 0.0
+    max_value: 1.0
+    step: 0.05
+    restore_value: true
+    optimistic: true
+    mode: box
+    initial_value: 0.0
+
+# ── Climate control regelcomponent ───────────────────────────────────────────
+climate_control:
+  id: climate_control_component
+  enable_switch: enable_control       # main on/off switch
+  room_sensor: ds18_room              # input sensor for room temperature
+  outside_sensor: ot_outside          # input sensor for outside temperature
+  inlet_sensor: ot_return             # input sensor for inlet temperature 
+  outlet_sensor: ot_boiler            # input sensor for outlet temperature
+  target_number: target_temp_number   # input number for target temperature
+  factor_a_number: factor_a_number    # input number for outside factor
+  factor_b_number: factor_b_number    # input number for inside factor
+  factor_c_number: factor_c_number    # input number for curve factor
+  anti_short_cycle: 30min           # minimum time between switching on/off
+  ch_switch: ot_ch_enable             # output switch to enable/disable heating
+  cooling_switch: ot_cooling_enable   # output switch to enable/disable cooling
+  setpoint_output: ot_t_set_output    # output for setpoint
+  room_output: ot_t_room_output       # output for room temperature
+  room_setpoint_output: ot_t_room_set_output  # output for room setpoint
+
+
