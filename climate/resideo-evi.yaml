@@ -1,0 +1,14 @@
+﻿# Copyright (c) 2025 Pluimvee
+# Resideo ESPHome configuration - Slaapkamer Evi
+
+substitutions:
+  device_id: resideo-evi
+  build_root: !secret build_root
+  friendly_name: Resideo Slaapkamer Evi
+  temp_offset: '-5.1'
+  humidity_offset: '0.0'
+
+packages:
+  wifi: !include ../wifi.yaml
+  version: !include ../version.yaml
+  base: !include resideo-base.yaml

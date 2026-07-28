@@ -1,0 +1,216 @@
+﻿# Copyright (c) 2025 Pluimvee
+# Water meter ESPHome configuration 
+
+# First some basic configuration
+#--------------------------------------------
+substitutions:
+  device_id: water-meter
+  build_root: !secret build_root
+  pulse_fraction: 0.450 # the fraction between uppulse and down-pulse for each turn (which is 1ltr)
+  calibrate_total: '3091.8232' # the total water used in mÂ³ at the moment of flashing (for correct total usage)
+  friendly_name: Water Meter
+
+packages:
+  wifi: !include ../wifi.yaml
+  version: !include ../version.yaml
+
+esphome:
+  name: ${device_id}
+  build_path: ${build_root}/${device_id}  
+  friendly_name: ${friendly_name}
+  project:
+    name: 'EcoGrid.Connect - Water meter'
+    version: ${version}
+  on_boot:
+    priority: -100  # Zorgt dat dit als laatste gebeurt (na WiFi, tijd, etc.)
+    then:
+      - lambda: |-
+          id(last_pulse_time) = millis();  // Initialize last pulse time
+
+esp8266:
+  board: esp12e
+  restore_from_flash: true
+
+preferences:
+  flash_write_interval: 60min # Minimize flash wear, max 1hr loss on power loss (OTA seems to maintain RAM variables)
+
+# Enable logging
+logger:
+  level: INFO
+  baud_rate: 0
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: !secret api_key
+
+# Allow Over-The-Air updates
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+
+# Enable web server for debugging and control
+web_server:
+    port: 80
+    version: 3
+
+# and now we are adding the functionality of this device
+#--------------------------------------------
+# -- Time Setup --
+time:
+  - platform: homeassistant
+    id: time_id
+
+# -- Persistent globals --
+globals:
+  - id: water_used_total
+    type: float
+    restore_value: yes # Restore from persistent storage
+    initial_value: ${calibrate_total}
+
+  - id: water_used_today
+    type: float
+    restore_value: no # Do not persist flash read/writes is limited (100k)
+    initial_value: '0.0'
+
+  - id: water_flow
+    type: float
+    restore_value: no # Do not persist 
+    initial_value: '0.0'
+
+  - id: last_pulse_time
+    type: uint32_t
+    initial_value: '0'
+  - id: last_rising_time
+    type: uint32_t
+    initial_value: '0'
+
+# temperary button for calibration of the total, can be removed after use
+# button:
+#   - platform: template
+#     name: "Reset Total to Calibration"
+#     on_press:
+#       - lambda: |-
+#           id(water_used_total) = ${calibrate_total};
+#           id(total).publish_state(id(water_used_total));
+#           global_preferences->sync();
+
+script:
+  - id: delayed_save
+    mode: restart
+    then:
+      - delay: 10s
+      - lambda: |-
+          // Reset the water flow
+          id(water_flow) = 0.0;  
+
+sensor:
+  # Add a sensor to monitor WiFi signal strength
+  - platform: wifi_signal
+    name: "WiFi Signal Strength"
+    update_interval: 60s
+    icon: "mdi:wifi"
+
+  # -- Water meter sensors --
+  - platform: template
+    name: "Total"
+    id: total
+    unit_of_measurement: "mÂ³"
+    state_class: total_increasing # Use total_increasing to only accept increasing values
+    device_class: water
+    icon: "mdi:water-plus"
+    accuracy_decimals: 4
+    lambda: |-
+      return id(water_used_total);
+
+  - platform: template
+    name: "Today"
+    id: today
+    unit_of_measurement: "L"
+    state_class: total_increasing
+    device_class: water
+    icon: "mdi:cup-water"
+    accuracy_decimals: 2
+    lambda: |-
+      return id(water_used_today);
+
+  - platform: template
+    name: "Flow"
+    id: flow
+    unit_of_measurement: "L/min"
+    state_class: measurement
+    device_class: water
+    accuracy_decimals: 2
+    icon: "mdi:water-pump"
+    update_interval: 5s
+    lambda: |-
+      return id(water_flow);
+
+# -- Water meter edge detection --
+binary_sensor:
+  - platform: gpio
+    pin: GPIO05
+    name: "Detector"
+    id: detector
+    icon: mdi:format-rotate-90
+    filters:
+      - delayed_on: 200ms
+      - delayed_off: 200ms
+    on_press:
+      - lambda: |-
+          uint32_t now = millis();
+          id(water_used_total) += ${pulse_fraction} / 1000.0;   
+          id(water_used_today) += ${pulse_fraction};
+          id(total).publish_state(id(water_used_total));
+          id(today).publish_state(id(water_used_today));
+
+          // last_rising_time has last on_press time
+          // now has the current on_press
+          // 1 cycle is now - last_rising_time
+          uint32_t cycle_time = now - id(last_rising_time);
+
+          // last_pulse_time has last on_release
+          // now has the current on_press
+          uint32_t on_cycle_time = now - id(last_pulse_time);
+
+          // Calculate the pulse fraction (which is the time_on / total cycle time)
+          // a total cycle time reflects 1ltr of water, and the on_cycle_time reflects the fraction of that cycle that is on
+          float fraction = (float)on_cycle_time / (float)cycle_time;
+          ESP_LOGI("water_meter", "Pulse fraction: %0.4f, Cycle time: %d ms, On cycle time: %d ms", fraction, cycle_time, on_cycle_time);
+
+          id(water_flow) = (${pulse_fraction} * 60000) / (now - id(last_pulse_time));
+          id(last_pulse_time) = now;
+          id(last_rising_time) = now;
+      - script.execute: delayed_save
+    on_release:
+      - lambda: |-
+          uint32_t now = millis();
+          id(water_used_total) += (1-${pulse_fraction}) / 1000.0;   
+          id(water_used_today) += (1 - ${pulse_fraction});
+          id(total).publish_state(id(water_used_total));
+          id(today).publish_state(id(water_used_today));
+
+          id(water_flow) = ((1 - ${pulse_fraction}) * 60000) / (now - id(last_pulse_time));
+          id(last_pulse_time) = now;
+      - script.execute: delayed_save
+
+# -- Midnight reset for "Water Used Today" --
+interval:
+  - interval: 60s
+    then:
+      - lambda: |-
+          static int last_day = -1;
+          auto time = id(time_id).now();
+          if (time.is_valid()) {
+            // initialize last_day after boot
+            if (last_day == -1) {
+              last_day = time.day_of_year;
+            }
+            // Reset water_used_today at midnight
+            if (time.day_of_year != last_day) {
+              last_day = time.day_of_year;
+              id(water_used_today) = 0;
+              id(today).publish_state(id(water_used_today));
+            }
+          }

@@ -1,0 +1,14 @@
+﻿# Copyright (c) 2025 Pluimvee
+# Resideo ESPHome configuration - Eetkamer
+
+substitutions:
+  device_id: resideo-eetkamer
+  build_root: !secret build_root
+  friendly_name: Resideo Eetkamer
+  temp_offset: '-5.7'
+  humidity_offset: '0.2'
+
+packages:
+  wifi: !include ../wifi.yaml
+  version: !include ../version.yaml
+  base: !include resideo-base.yaml

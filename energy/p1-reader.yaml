@@ -1,0 +1,607 @@
+﻿# Copyright (c) 2025 Pluimvee
+# Smart Meter reader using P1 port of the meter
+
+# First some basic configuration
+#--------------------------------------------
+substitutions:
+  device_id: p1-reader
+  build_root: !secret build_root
+  friendly_name: P1 Reader
+
+packages:
+  wifi: !include ../wifi.yaml
+  version: !include ../version.yaml
+
+esphome:
+  name: ${device_id}
+  build_path: ${build_root}/${device_id}  
+  friendly_name: ${friendly_name}
+  project:
+    name: 'EcoGrid.Connect - DSMR/P1 Reader'
+    version: ${version}
+
+esp8266:
+  board: esp12e
+  restore_from_flash: false
+
+preferences:
+  flash_write_interval: never 
+
+# Enable logging
+logger:
+  level: INFO
+  baud_rate: 0  #free UART0; no serial logs
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: !secret api_key
+
+# Allow Over-The-Air updates
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+
+# # Enable web server for debugging and control
+web_server:
+    port: 80
+    version: 3
+
+external_components:
+  - source: github://Pluimvee/esphome-dsmr
+    refresh: never
+
+# User configurable settings
+number:
+  - platform: template
+    name: "Power Avg Minutes"
+    id: avg_minutes_setting
+    min_value: 1
+    max_value: 15
+    step: 1
+    restore_value: true
+    initial_value: 15
+    optimistic: true
+
+uart:
+  - id: uart_p1
+    rx_pin:
+      number: GPIO3
+      inverted: true
+    baud_rate: 115200
+    rx_buffer_size: 3000   # iets ruimer dan 1 frame
+    #debug:
+
+p1_dsmr:
+  uart_id: uart_p1
+  update_interval: 1s
+  obis_validity: 10s
+  sensors:
+    # gas consumption
+    - obis: "0-1:24.2.1"
+      name: "Gas Consumed"
+      unit_of_measurement: "m³"
+      device_class: gas
+      state_class: total_increasing
+      accuracy_decimals: 3
+      icon: "mdi:meter-gas"
+
+    # hidden sensors for power calculations
+    - id: power_import
+      obis: "1-0:1.7.0"
+      name: "Power Import"
+      unit_of_measurement: "W"
+      device_class: power
+      state_class: measurement
+      internal: true
+    - id: power_export
+      obis: "1-0:2.7.0"
+      name: "Power Export"
+      unit_of_measurement: "W"
+      device_class: power
+      state_class: measurement
+      internal: true
+
+    # internal power sensors per phase
+    - id: power_l1_import
+      obis: "1-0:21.7.0"
+      name: "Power L1 Import"
+      unit_of_measurement: "W"
+      device_class: power
+      state_class: measurement
+      internal: true
+    - id: power_l1_export
+      obis: "1-0:22.7.0"
+      name: "Power L1 Export"
+      unit_of_measurement: "W"
+      device_class: power
+      state_class: measurement
+      internal: true
+    - id: power_l2_import
+      obis: "1-0:41.7.0"
+      name: "Power L2 Import"
+      unit_of_measurement: "W"
+      device_class: power
+      state_class: measurement
+      internal: true
+    - id: power_l2_export
+      obis: "1-0:42.7.0"
+      name: "Power L2 Export"
+      unit_of_measurement: "W"
+      device_class: power
+      state_class: measurement
+      internal: true
+    - id: power_l3_import
+      obis: "1-0:61.7.0"
+      name: "Power L3 Import"
+      unit_of_measurement: "W"
+      device_class: power
+      state_class: measurement
+      internal: true
+    - id: power_l3_export
+      obis: "1-0:62.7.0"
+      name: "Power L3 Export"
+      unit_of_measurement: "W"
+      device_class: power
+      state_class: measurement
+      internal: true
+
+    # internal energy sensors per tariff
+    - id: energy_import_t1
+      obis: "1-0:1.8.1"
+      name: "Energy Import T1"
+      unit_of_measurement: "kWh"
+      device_class: energy
+      state_class: total_increasing
+      internal: true
+    - id: energy_import_t2
+      obis: "1-0:1.8.2"
+      name: "Energy Import T2"
+      unit_of_measurement: "kWh"
+      device_class: energy
+      state_class: total_increasing
+      internal: true
+    - id: energy_export_t1
+      obis: "1-0:2.8.1"
+      name: "Energy Export T1"
+      unit_of_measurement: "kWh"
+      device_class: energy
+      state_class: total_increasing
+      internal: true
+    - id: energy_export_t2
+      obis: "1-0:2.8.2"
+      name: "Energy Export T2"
+      unit_of_measurement: "kWh"
+      device_class: energy
+      state_class: total_increasing
+      internal: true
+
+    # published voltage sensors per phase
+    - id: voltage_l1
+      obis: "1-0:32.7.0"
+      name: "Voltage L1"
+      icon: "mdi:sine-wave"
+      unit_of_measurement: "V"
+      device_class: voltage
+      state_class: measurement
+      accuracy_decimals: 1
+      filters:
+        - delta: 0.1
+    - id: voltage_l2
+      obis: "1-0:52.7.0"
+      name: "Voltage L2"
+      icon: "mdi:sine-wave"
+      unit_of_measurement: "V"
+      device_class: voltage
+      state_class: measurement
+      accuracy_decimals: 1
+      filters:
+        - delta: 0.1
+    - id: voltage_l3
+      obis: "1-0:72.7.0"
+      name: "Voltage L3"
+      icon: "mdi:sine-wave"
+      unit_of_measurement: "V"
+      device_class: voltage
+      state_class: measurement
+      accuracy_decimals: 1
+      filters:
+        - delta: 0.1
+
+    # published current sensors per phase
+    - id: current_l1
+      obis: "1-0:31.7.0"
+      name: "Current L1"
+      icon: "mdi:current-ac"
+      unit_of_measurement: "A"
+      device_class: current
+      state_class: measurement
+      accuracy_decimals: 2
+      filters:
+        - delta: 0.01
+    - id: current_l2
+      obis: "1-0:51.7.0"
+      name: "Current L2"
+      icon: "mdi:current-ac"
+      unit_of_measurement: "A"
+      device_class: current
+      state_class: measurement
+      accuracy_decimals: 2
+      filters:
+        - delta: 0.01
+    - id: current_l3
+      obis: "1-0:71.7.0"
+      name: "Current L3"
+      icon: "mdi:current-ac"
+      unit_of_measurement: "A"
+      device_class: current
+      state_class: measurement
+      accuracy_decimals: 2
+      filters:
+        - delta: 0.01
+
+sensor:
+  # Add a sensor to monitor WiFi signal strength
+  - platform: wifi_signal
+    name: "WiFi Signal Strength"
+    update_interval: 60s
+    icon: "mdi:wifi"
+
+  # the power for each phase (import - export)
+  - id: power_l1
+    platform: template
+    name: "Power L1"
+    icon: "mdi:flash"
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: 1s
+    filters:
+      - delta: 1
+    lambda: |-
+      if (isnan(id(power_l1_import).state) || isnan(id(power_l1_export).state)) return NAN;
+      return id(power_l1_import).state - id(power_l1_export).state;
+
+  - id: power_l2
+    platform: template
+    name: "Power L2"
+    icon: "mdi:flash"
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: 1s
+    filters:
+      - delta: 1
+    lambda: |-
+      if (isnan(id(power_l2_import).state) || isnan(id(power_l2_export).state)) return NAN;
+      return id(power_l2_import).state - id(power_l2_export).state;
+
+  - id: power_l3
+    platform: template
+    name: "Power L3"
+    icon: "mdi:flash"
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: 1s
+    filters:
+      - delta: 1
+    lambda: |-
+      if (isnan(id(power_l3_import).state) || isnan(id(power_l3_export).state)) return NAN;
+      return id(power_l3_import).state - id(power_l3_export).state;
+
+  # the total net power (import - export)
+  - id: net_power
+    platform: template
+    name: "Power"
+    icon: "mdi:flash"
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: 1s
+    filters:
+      - delta: 1
+    lambda: |-
+      if (isnan(id(power_import).state) || isnan(id(power_export).state)) return NAN;
+      return id(power_import).state - id(power_export).state;
+
+  # the average net power over ~1 minute
+  - id: avg_power
+    platform: template
+    name: "Power Average"
+    icon: "mdi:flash"
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: 1s
+    filters:
+      - delta: 1
+    lambda: |-
+      float net = id(net_power).state;
+      if (isnan(net)) return NAN;
+
+      // configurable averaging window based on number entity (minutes)
+      static float buf[900];      // up to 15 minutes @ 1s interval
+      static uint16_t idx = 0;
+      static uint16_t len = 0;
+
+      float minutes_val = id(avg_minutes_setting).state;
+      if (isnan(minutes_val)) minutes_val = 15.0f;
+      int minutes = clamp((int) minutes_val, 1, 15);  // slider range
+      uint16_t samples = minutes * 60;  // max 900
+
+      buf[idx] = net;           // store current value
+      idx = (idx + 1) % 900;    // advance index
+      if (len < 900) len++;     // increase length upto max
+
+      uint16_t cnt = len < samples ? len : samples;
+      float sum = 0.0f;
+      for (uint16_t i = 0; i < cnt; i++) {
+        uint16_t pos = (idx + 900 - 1 - i) % 900;
+        sum += buf[pos];
+      }
+      return cnt > 0 ? sum / cnt : NAN;
+
+  # the total current
+  - id: current_total
+    platform: template
+    name: "Current"
+    icon: "mdi:current-ac"
+    unit_of_measurement: "A"
+    device_class: current
+    state_class: measurement
+    accuracy_decimals: 2
+    update_interval: 1s
+    filters:
+      - delta: 0.01
+    lambda: |-
+      float currents[3];
+      currents[0] = id(current_l1).state;
+      currents[1] = id(current_l2).state;
+      currents[2] = id(current_l3).state;
+      float total = 0.0f;
+      bool has = false;
+      for (int i = 0; i < 3; i++) {
+        if (!isnan(currents[i])) { total += currents[i]; has = true; }
+      }
+      return has ? total : NAN;
+
+  # S, Q and PF per phase
+  # The utility meter supplies whole integers for voltage and current which causes the calculations of S, Q and PF to be inaccurate, especially at low loads. 
+  # as such the below are commentedout and no longer offerred
+
+  # - id: s_l1
+  #   platform: template
+  #   name: "Apparent Power L1"
+  #   unit_of_measurement: "VA"
+  #   device_class: apparent_power
+  #   accuracy_decimals: 0
+  #   update_interval: 1s
+  #   lambda: |-
+  #     float v = id(voltage_l1).state;
+  #     float i = id(current_l1).state;
+  #     if (!isfinite(v) || !isfinite(i) || v <= 0 || i < 0) return NAN;
+  #     return v * i;
+
+  # - platform: template
+  #   name: "Power Factor L1"
+  #   unit_of_measurement: ""
+  #   device_class: power_factor
+  #   accuracy_decimals: 2
+  #   update_interval: 1s
+  #   lambda: |-
+  #     float p = id(power_l1).state;
+  #     float s = id(s_l1).state;
+  #     if (!isfinite(p) || !isfinite(s) || s <= 5.0f) return NAN;
+  #     float pf = p / s;
+  #     if (pf < -1 || pf > 1) return NAN;
+  #     return pf;
+
+  # - id: q_l1
+  #   platform: template
+  #   name: "Reactive Power L1"
+  #   unit_of_measurement: "var"
+  #   device_class: reactive_power
+  #   accuracy_decimals: 0
+  #   update_interval: 1s
+  #   lambda: |-
+  #     float p = id(power_l1).state;
+  #     float s = id(s_l1).state;
+  #     if (!isfinite(p) || !isfinite(s) || s <= 5.0f) return NAN;
+  #     float q2 = (s * s) - (p * p);
+  #     if (q2 < 0) return NAN;
+  #     return sqrtf(q2);
+
+  # - id: s_l2
+  #   platform: template
+  #   name: "Apparent Power L2"
+  #   unit_of_measurement: "VA"
+  #   device_class: apparent_power
+  #   accuracy_decimals: 0
+  #   update_interval: 1s
+  #   lambda: |-
+  #     float v = id(voltage_l2).state;
+  #     float i = id(current_l2).state;
+  #     if (!isfinite(v) || !isfinite(i) || v <= 0 || i < 0) return NAN;
+  #     return v * i;
+
+  # - platform: template
+  #   name: "Power Factor L2"
+  #   unit_of_measurement: ""
+  #   device_class: power_factor
+  #   accuracy_decimals: 2
+  #   update_interval: 1s
+  #   lambda: |-
+  #     float p = id(power_l2).state;
+  #     float s = id(s_l2).state;
+  #     if (!isfinite(p) || !isfinite(s) || s <= 5.0f) return NAN;
+  #     float pf = p / s;
+  #     if (pf < -1 || pf > 1) return NAN;
+  #     return pf;
+
+  # - id: q_l2
+  #   platform: template
+  #   name: "Reactive Power L2"
+  #   unit_of_measurement: "var"
+  #   device_class: reactive_power
+  #   accuracy_decimals: 0
+  #   update_interval: 1s
+  #   lambda: |-
+  #     float p = id(power_l2).state;
+  #     float s = id(s_l2).state;
+  #     if (!isfinite(p) || !isfinite(s) || s <= 5.0f) return NAN;
+  #     float q2 = (s * s) - (p * p);
+  #     if (q2 < 0) return NAN;
+  #     return sqrtf(q2);
+
+  # - id: s_l3
+  #   platform: template
+  #   name: "Apparent Power L3"
+  #   unit_of_measurement: "VA"
+  #   device_class: apparent_power
+  #   accuracy_decimals: 0
+  #   update_interval: 1s
+  #   lambda: |-
+  #     float v = id(voltage_l3).state;
+  #     float i = id(current_l3).state;
+  #     if (!isfinite(v) || !isfinite(i) || v <= 0 || i < 0) return NAN;
+  #     return v * i;
+
+  # - platform: template
+  #   name: "Power Factor L3"
+  #   unit_of_measurement: ""
+  #   device_class: power_factor
+  #   accuracy_decimals: 2
+  #   update_interval: 1s
+  #   lambda: |-
+  #     float p = id(power_l3).state;
+  #     float s = id(s_l3).state;
+  #     if (!isfinite(p) || !isfinite(s) || s <= 5.0f) return NAN;
+  #     float pf = p / s;
+  #     if (pf < -1 || pf > 1) return NAN;
+  #     return pf;
+
+  # - id: q_l3
+  #   platform: template
+  #   name: "Reactive Power L3"
+  #   unit_of_measurement: "var"
+  #   device_class: reactive_power
+  #   accuracy_decimals: 0
+  #   update_interval: 1s
+  #   lambda: |-
+  #     float p = id(power_l3).state;
+  #     float s = id(s_l3).state;
+  #     if (!isfinite(p) || !isfinite(s) || s <= 5.0f) return NAN;
+  #     float q2 = (s * s) - (p * p);
+  #     if (q2 < 0) return NAN;
+  #     return sqrtf(q2);
+
+  # # total S, Q and PF
+  # - id: s_total
+  #   platform: template
+  #   name: "Apparent Power"
+  #   unit_of_measurement: "VA"
+  #   device_class: apparent_power
+  #   accuracy_decimals: 0
+  #   update_interval: 1s
+  #   lambda: |-
+  #     float s1 = id(s_l1).state;
+  #     float s2 = id(s_l2).state;
+  #     float s3 = id(s_l3).state;
+  #     float total = 0.0f;
+  #     bool has = false;
+  #     if (isfinite(s1)) { total += s1; has = true; }
+  #     if (isfinite(s2)) { total += s2; has = true; }
+  #     if (isfinite(s3)) { total += s3; has = true; }
+  #     return has ? total : NAN;
+
+  # - platform: template
+  #   name: "Power Factor"
+  #   unit_of_measurement: ""
+  #   device_class: power_factor
+  #   accuracy_decimals: 2
+  #   update_interval: 1s
+  #   lambda: |-
+  #     float p = id(net_power).state;
+  #     float s = id(s_total).state;
+  #     if (!isfinite(p) || !isfinite(s) || s <= 5.0f) return NAN;
+  #     float pf = p / s;
+  #     if (pf < -1 || pf > 1) return NAN;
+  #     return pf;
+
+  # - platform: template
+  #   name: "Reactive Power"
+  #   unit_of_measurement: "var"
+  #   device_class: reactive_power
+  #   accuracy_decimals: 0
+  #   update_interval: 1s
+  #   lambda: |-
+  #     float q1 = id(q_l1).state;
+  #     float q2 = id(q_l2).state;
+  #     float q3 = id(q_l3).state;
+  #     float total = 0.0f;
+  #     bool has = false;
+  #     if (isfinite(q1)) { total += q1; has = true; }
+  #     if (isfinite(q2)) { total += q2; has = true; }
+  #     if (isfinite(q3)) { total += q3; has = true; }
+  #     return has ? total : NAN;
+
+  # the total net electricity (import - export)
+  - platform: template
+    name: "Electricity Consumed"
+    icon: "mdi:counter"
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total
+    accuracy_decimals: 3
+    update_interval: 60s
+    filters:
+      - delta: 0.01
+    lambda: |-
+      float value = 0.0;
+      bool has_data = false;
+      if (!isnan(id(energy_import_t1).state)) { value += id(energy_import_t1).state; has_data = true; }
+      if (!isnan(id(energy_import_t2).state)) { value += id(energy_import_t2).state; has_data = true; }
+      if (!isnan(id(energy_export_t1).state)) { value -= id(energy_export_t1).state; has_data = true; }
+      if (!isnan(id(energy_export_t2).state)) { value -= id(energy_export_t2).state; has_data = true; }
+      return has_data ? value : NAN;
+
+  - platform: template
+    name: "Electricity Import"
+    icon: "mdi:counter"
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 3
+    update_interval: 60s
+    filters:
+      - delta: 0.01
+    lambda: |-
+      float value = 0.0;
+      bool has_data = false;
+      if (!isnan(id(energy_import_t1).state)) { value += id(energy_import_t1).state; has_data = true; }
+      if (!isnan(id(energy_import_t2).state)) { value += id(energy_import_t2).state; has_data = true; }
+      return has_data ? value : NAN;
+
+  - platform: template
+    name: "Electricity Export"
+    icon: "mdi:counter"
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 3
+    update_interval: 60s
+    filters:
+      - delta: 0.01
+    lambda: |-
+      float value = 0.0;
+      bool has_data = false;
+      if (!isnan(id(energy_export_t1).state)) { value += id(energy_export_t1).state; has_data = true; }
+      if (!isnan(id(energy_export_t2).state)) { value += id(energy_export_t2).state; has_data = true; }
+      return has_data ? value : NAN;
