@@ -43,10 +43,10 @@ esp32:
 external_components:
   - source:
       type: local
-      path: ../components/esphome-climate-control/components
+      path: ../../components/esphome-climate-control/components
   - source:
       type: local
-      path: ../components/esphome-opentherm/components
+      path: ../../components/esphome-opentherm/components
 
 logger:
   level: INFO
@@ -162,9 +162,12 @@ display:
     model: ST7735
     invert_colors: false
     dc_pin: GPIO26    # D0 pos op ESP32 MH-ET/LOLIN (was GPIO16 op ESP8266)
+    data_rate: 20MHz
     dimensions:
       width: 128
       height: 160
+      offset_width: 2
+      offset_height: 1
     rotation: 270
     id: thermostat_display
     update_interval: 500ms
@@ -331,6 +334,11 @@ binary_sensor:
       device_class: cold
       icon: mdi:snowflake
 
+
+button:
+  - platform: restart
+    name: "Restart"
+    id: btn_restart
 
 # ── Schakelaars ───────────────────────────────────────────────────────────────
 switch:

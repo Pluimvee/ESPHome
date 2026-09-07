@@ -1,0 +1,297 @@
+# Copyright (c) 2026 Pluimvee
+# SDM72D-M energy meter reader via Modbus RTU
+#
+# This meter has no per-phase energy registers (confirmed against the
+# official SDM72CT-M protocol doc and by testing). Per-phase kWh is
+# reconstructed locally: active power per phase is integrated every second
+# directly into energy_lX_kwh, so the values move in real time. The meter's
+# own Total Energy register only updates in coarse steps (~0.01 kWh), so it
+# can't be used as the primary source - instead, whenever it does tick, the
+# small gap between our own running sum and the meter's real delta is
+# distributed across the phases proportional to their share since the last
+# tick. This keeps the long-term total anchored to the meter's ground truth
+# without needing a resolvable meter step before anything becomes visible.
+
+substitutions:
+  device_id: sdm72d-m
+  build_root: !secret build_root
+  friendly_name: SDM72D-M Energy Meter
+
+packages:
+  wifi: !include ../wifi.yaml
+  version: !include ../version.yaml
+
+esphome:
+  name: ${device_id}
+  build_path: ${build_root}/${device_id}
+  friendly_name: ${friendly_name}
+  project:
+    name: 'EcoGrid.SDM72D-M Reader'
+    version: ${version}
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+preferences:
+  flash_write_interval: 15min
+
+logger:
+  level: INFO
+  baud_rate: 0
+  logs:
+    uart: WARN
+    sensor: WARN
+    modbus_controller.sensor: WARN
+
+api:
+  encryption:
+    key: !secret api_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+mdns:
+  disabled: false
+
+web_server:
+  port: 80
+  version: 3
+
+uart:
+  - id: uart_rs485
+    rx_pin: GPIO16
+    tx_pin: GPIO17
+    baud_rate: 9600
+    data_bits: 8
+    parity: NONE
+    stop_bits: 1
+    rx_buffer_size: 512
+
+modbus:
+  - id: modbus1
+    uart_id: uart_rs485
+
+modbus_controller:
+  - id: sdm72dm
+    address: 1          # SDM72D-M default Modbus address
+    modbus_id: modbus1
+    update_interval: 1s  # base tick - power reads happen every tick, others are skipped down below
+    setup_priority: -10
+
+globals:
+  - id: integ_l1
+    type: float
+    initial_value: "0"
+  - id: integ_l2
+    type: float
+    initial_value: "0"
+  - id: integ_l3
+    type: float
+    initial_value: "0"
+  # NOTE: prev_total_energy is intentionally NOT restore_value. On an unclean
+  # reboot it resets to NAN, so the next Total Energy reading just re-baselines
+  # instead of reconciling - any meter delta that accrued since the last flash
+  # sync (up to flash_write_interval old) is silently dropped from the l1/l2/l3
+  # split forever (energy_lX_kwh itself also rolls back that same window, since
+  # it's restore_value on the same sync). If that permanent gap ever matters,
+  # make this restore_value: true too - all restore_value globals are flushed
+  # together in one sync() (see esp32/preferences.cpp), so it would then
+  # reconcile the whole missed period in one go, using whatever power ratio is
+  # available in the first few seconds after boot (a rough guess for that one
+  # catch-up event, but the running total would no longer permanently drift).
+  - id: prev_total_energy
+    type: float
+    initial_value: "NAN"
+  - id: energy_l1_kwh
+    type: float
+    restore_value: true
+    initial_value: "0"
+  - id: energy_l2_kwh
+    type: float
+    restore_value: true
+    initial_value: "0"
+  - id: energy_l3_kwh
+    type: float
+    restore_value: true
+    initial_value: "0"
+
+interval:
+  - interval: 1s
+    then:
+      - lambda: |-
+          const float p1 = id(power_l1).state;
+          const float p2 = id(power_l2).state;
+          const float p3 = id(power_l3).state;
+          // direct integration (W sample each second -> kWh) so the values move
+          // in real time; Total Energy below only corrects the accumulated drift
+          if (!isnan(p1)) { id(integ_l1) += p1; id(energy_l1_kwh) += p1 / 3600000.0f; }
+          if (!isnan(p2)) { id(integ_l2) += p2; id(energy_l2_kwh) += p2 / 3600000.0f; }
+          if (!isnan(p3)) { id(integ_l3) += p3; id(energy_l3_kwh) += p3 / 3600000.0f; }
+
+sensor:
+  - platform: wifi_signal
+    name: "WiFi Signal Strength"
+    icon: "mdi:wifi"
+    update_interval: 60s
+
+  # --- Voltage per phase (0x0000-0x0004), read once every 10 ticks (~10s) ---
+  - platform: modbus_controller
+    modbus_controller_id: sdm72dm
+    name: "Voltage L1"
+    id: voltage_l1
+    register_type: read
+    address: 0x0000
+    value_type: FP32
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    accuracy_decimals: 1
+    skip_updates: 9
+
+  - platform: modbus_controller
+    modbus_controller_id: sdm72dm
+    name: "Voltage L2"
+    id: voltage_l2
+    register_type: read
+    address: 0x0002
+    value_type: FP32
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    accuracy_decimals: 1
+    skip_updates: 9
+
+  - platform: modbus_controller
+    modbus_controller_id: sdm72dm
+    name: "Voltage L3"
+    id: voltage_l3
+    register_type: read
+    address: 0x0004
+    value_type: FP32
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    accuracy_decimals: 1
+    skip_updates: 9
+
+  # --- Active power per phase + total (0x000C-0x0010, 0x0034), every tick (~1s) ---
+  - platform: modbus_controller
+    modbus_controller_id: sdm72dm
+    name: "Active Power L1"
+    id: power_l1
+    register_type: read
+    address: 0x000C
+    value_type: FP32
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+
+  - platform: modbus_controller
+    modbus_controller_id: sdm72dm
+    name: "Active Power L2"
+    id: power_l2
+    register_type: read
+    address: 0x000E
+    value_type: FP32
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+
+  - platform: modbus_controller
+    modbus_controller_id: sdm72dm
+    name: "Active Power L3"
+    id: power_l3
+    register_type: read
+    address: 0x0010
+    value_type: FP32
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+
+  - platform: modbus_controller
+    modbus_controller_id: sdm72dm
+    name: "Total Active Power"
+    id: power_total
+    register_type: read
+    address: 0x0034
+    value_type: FP32
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+
+  # --- Total Energy (0x0156), ground truth for the per-phase split below, ~10s ---
+  - platform: modbus_controller
+    modbus_controller_id: sdm72dm
+    name: "Total Energy"
+    id: energy_total
+    register_type: read
+    address: 0x0156
+    value_type: FP32
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 2
+    skip_updates: 9
+    on_value:
+      then:
+        - lambda: |-
+            if (isnan(id(prev_total_energy))) {
+              id(prev_total_energy) = x;
+              return;
+            }
+            const float meter_delta = x - id(prev_total_energy);
+            id(prev_total_energy) = x;
+            if (meter_delta <= 0.0f) return;  // meter hasn't ticked yet - keep waiting, integ_lX keeps accumulating
+
+            const float sum = id(integ_l1) + id(integ_l2) + id(integ_l3);
+            if (sum <= 0.0f) return;
+
+            // energy_lX_kwh was already updated live every second above; this only
+            // corrects the small gap between our own running sum and the meter's truth
+            const float our_delta = sum / 3600000.0f;
+            const float error = meter_delta - our_delta;
+
+            id(energy_l1_kwh) += error * (id(integ_l1) / sum);
+            id(energy_l2_kwh) += error * (id(integ_l2) / sum);
+            id(energy_l3_kwh) += error * (id(integ_l3) / sum);
+            id(integ_l1) = 0.0f;
+            id(integ_l2) = 0.0f;
+            id(integ_l3) = 0.0f;
+
+  # --- Locally reconstructed per-phase energy, corrected against Total Energy above ---
+  - platform: template
+    name: "Energy L1"
+    id: energy_l1_sensor
+    lambda: return id(energy_l1_kwh);
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 3
+    update_interval: 10s
+
+  - platform: template
+    name: "Energy L2"
+    id: energy_l2_sensor
+    lambda: return id(energy_l2_kwh);
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 3
+    update_interval: 10s
+
+  - platform: template
+    name: "Energy L3"
+    id: energy_l3_sensor
+    lambda: return id(energy_l3_kwh);
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 3
+    update_interval: 10s
