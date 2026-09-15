@@ -67,32 +67,6 @@ modbus_bridge:
    port: 502
    buffer_size: 256
    timeout: 3000
-   inject_unit_id: 1
-   inject_interval: 200
-
-switch:
-  - platform: template
-    name: "Modbus Injection"
-    id: modbus_injection
-    icon: "mdi:transmission-tower"
-    optimistic: true
-    turn_on_action:
-      - lambda: "id(bridge).set_modbus_injection(true);"
-    turn_off_action:
-      - lambda: "id(bridge).set_modbus_injection(false);"
-
-number:
-  - platform: template
-    name: "Modbus Injection Power"
-    id: modbus_injection_power
-    icon: "mdi:lightning-bolt"
-    unit_of_measurement: W
-    min_value: -10000
-    max_value: 10000
-    step: 1
-    optimistic: true
-    set_action:
-      - lambda: "id(bridge).set_inject_power(x);"
 
 #and some sensors to monitor the bridge itself
 binary_sensor:

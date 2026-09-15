@@ -18,6 +18,9 @@ packages:
 # we need to connect to an AP with either channel 1 or 6 in use to have alo the AP on the same channel as the inverter AP (which is on channel 11)
 # channel 11 is not supported by Omnik firmware so an AP on this channel will not work
 wifi:
+  # ssid/password komen uit ../wifi.yaml, maar die botsen met networks: - dus eruit
+  ssid: !remove
+  password: !remove
   fast_connect: false
   networks:
     - ssid: !secret wifi_ssid
@@ -93,9 +96,10 @@ globals:
 # and now we are adding the functionality of this device
 #--------------------------------------------
 external_components:
-  - source: C:/Users/erikv/OneDrive/Archive/Erik/Hobby/ESPHome/components/esphome-omnik/components
+  - source:
+      type: local
+      path: ../../components/esphome-omnik/components
     components: [omnik_bridge]
-    refresh: 1min
 
 omnik_bridge:
   ap_ssid: "OmnikPortal"
