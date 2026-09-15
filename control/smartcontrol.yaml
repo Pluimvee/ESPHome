@@ -9,8 +9,8 @@
 #   D0 pos = GPIO26 = TFT DC   (was D0=GPIO16 op ESP8266)
 #   D7 pos = GPIO23 = TFT MOSI (was D7=GPIO13 op ESP8266) – VSPI
 #   D5 pos = GPIO18 = TFT CLK  (was D5=GPIO14 op ESP8266) – VSPI
-#   TFT CS = hardwarematig naar GND (permanent geselecteerd, zoals origineel)
-#   TFT RST = niet aangesloten
+#   D8 pos = GPIO5  = TFT CS   (was D8=GPIO15 op ESP8266) – strapping: boot HIGH
+#   D3 pos = GPIO17 = TFT RST  (was D3=GPIO0  op ESP8266)
 #   GPIO2  = onboard LED PCB (hardwired, geen D-pin)
 
 substitutions:
@@ -162,17 +162,23 @@ display:
     model: ST7735
     invert_colors: false
     dc_pin: GPIO26    # D0 pos op ESP32 MH-ET/LOLIN (was GPIO16 op ESP8266)
-    data_rate: 20MHz
+    cs_pin:
+      number: GPIO5   # D8 pos – VSPI CS0; strapping-pin, idle HIGH dus geen conflict
+      ignore_strapping_warning: true
+    reset_pin: GPIO17 # D3 pos – kale GPIO, geen strapping-functie
+    data_rate: 10MHz  # ST7735 spec: schrijfklok max ~15MHz (66ns cyclus)
     dimensions:
       width: 128
       height: 160
-      offset_width: 2
-      offset_height: 1
+      # Dit paneel heeft GEEN offset: zichtbaar gebied = GRAM 0..127 x 0..159,
+      # dus geen offset_*/pad_*. Met offset 2/1 liep CASET bij rotation 270 tot
+      # 160, klemde de controller af op 159 en schoof elke regel 1 px op.
     rotation: 270
+    buffer_size: 100%  # volle framebuffer (40KB heap): lambda draait 1x i.p.v. 4x
     id: thermostat_display
     update_interval: 500ms
     lambda: |-
-      const auto C_LABEL = Color(160, 120,  80);   // warm grijs
+      const auto C_LABEL = Color(215, 180, 140);   // warm grijs, feller
       const auto C_DT    = Color(200, 200, 200);   // lichtgrijs
       const auto C_TEMP  = Color(100, 210, 130);   // groen
       const auto C_WATER = Color( 80, 160, 210);   // blauw
