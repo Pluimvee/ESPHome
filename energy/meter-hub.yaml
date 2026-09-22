@@ -1,0 +1,981 @@
+# Copyright (c) 2026 Pluimvee
+# Meter Hub - DSMR/P1 smart meter + SDM72D-M submeters on one ESP32-C3
+#
+# The point of putting both on one controller is timing. The P1 port emits a
+# telegram every second, but the meter only refreshes the actual figures every
+# ~10s. So instead of polling the submeter on a fixed interval and hoping the
+# samples line up, the 1s interval below watches for the moment the P1 numbers
+# actually change and polls the SDM72 right then. The Modbus round-trip at 9600
+# baud is ~30ms, so both samples describe the same instant and House Load below
+# is a real subtraction instead of two readings up to 10s apart.
+#
+# Pin choice (ESP32-C3 SuperMini): the P1 line must stay off the strapping pins
+# (GPIO2/8/9). Its external pull-up holds it high at idle, which would be the
+# right level, but the meter sends a telegram every second - a reset landing
+# mid-telegram samples a random bit and picks the wrong boot mode. GPIO21 is
+# deliberately left unused: the ROM bootloader prints its banner there on every
+# reset, so keeping RS485 TX off it means no boot garbage on the Modbus bus.
+# Logging runs over USB-Serial/JTAG, so both hardware UARTs stay free.
+# P1 sits on GPIO3 to suit the wiring; GPIO20 would have been UART0's IO_MUX RX
+# pin, but routing through the GPIO matrix instead costs nothing at 115200 baud.
+
+# First some basic configuration
+#--------------------------------------------
+substitutions:
+  device_id: meter-hub
+  build_root: !secret build_root
+  friendly_name: Meter Hub
+
+packages:
+  wifi: !include ../wifi.yaml
+  version: !include ../version.yaml
+
+esphome:
+  name: ${device_id}
+  build_path: ${build_root}/${device_id}
+  friendly_name: ${friendly_name}
+  project:
+    name: 'EcoGrid.SmartMeter Hub (P1 + SDM72)'
+    version: ${version}
+
+# using an ESP32-C3 SuperMini
+esp32:
+  board: esp32-c3-devkitm-1
+  variant: esp32c3
+  framework:
+    type: esp-idf
+
+# restore_value globals below (PV energy counters) need a real write interval
+preferences:
+  flash_write_interval: 15min
+
+# On the C3 the logger defaults to USB_SERIAL_JTAG, so logs go over the native
+# USB port and both hardware UARTs stay free - no baud_rate: 0 needed here.
+logger:
+  level: INFO
+  hardware_uart: USB_SERIAL_JTAG
+  logs:
+    uart: WARN
+    sensor: WARN
+    modbus_controller.sensor: WARN
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: !secret api_key
+
+# Allow Over-The-Air updates
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+# mDNS expliciet aan laten
+mdns:
+  disabled: false
+
+# Enable web server for debugging and control
+web_server:
+    port: 80
+    version: 3
+
+external_components:
+  - source: github://Pluimvee/esphome-dsmr
+    refresh: never
+
+# and now we are adding the functionality of this device
+#--------------------------------------------
+
+# onboard blue LED (GPIO8, active low): lit = something is wrong, dark = healthy.
+# The separate red power LED stays on, so "dark" is distinguishable from "dead".
+status_led:
+  pin:
+    number: GPIO8
+    inverted: true
+
+# WiFi in a meterkast is the known weak spot of this board - keep counting drops.
+# power_save_mode overrides the `none` from ../wifi.yaml for this device only:
+# this board idles around 60 C and the radio, not the CPU, is what heats it.
+# A meter that ships a sample every 10s does not need the modem awake between
+# them.
+wifi:
+  power_save_mode: light
+  on_disconnect:
+    then:
+      - lambda: id(wifi_drops) += 1;
+
+uart:
+  - id: uart_p1
+    rx_pin:
+      number: GPIO3
+      inverted: true
+      # The P1 data line is open collector: the meter can only pull it to GND,
+      # never drive it high, so it needs a pull-up to work at all. This internal
+      # one (~45k) is weak next to the usual external 1k-10k - keep the external
+      # resistor; this only keeps the pin defined when no meter is attached.
+      mode:
+        input: true
+        pullup: true
+    baud_rate: 115200
+    rx_buffer_size: 3000   # iets ruimer dan 1 frame
+
+  - id: uart_rs485
+    # not inverted, so idle is HIGH here; same reasoning as above
+    rx_pin:
+      number: GPIO5
+      mode:
+        input: true
+        pullup: true
+    tx_pin: GPIO6
+    baud_rate: 9600
+    data_bits: 8
+    parity: NONE
+    stop_bits: 1
+    rx_buffer_size: 512
+
+modbus:
+  - id: modbus1
+    uart_id: uart_rs485
+
+# All three meters share the bus and are polled together from the P1 change
+# detection below, so every sample in one cycle describes the same instant.
+# Seven ranges at 9600 baud is roughly 300ms of bus time per cycle - nothing
+# next to the ~10s between P1 refreshes.
+modbus_controller:
+  - id: sdm72_pv
+    address: 1              # SDM72D-M default Modbus address
+    modbus_id: modbus1
+    update_interval: never  # driven from the P1 change detection below
+    setup_priority: -10
+
+  - id: sdm72_kitchen
+    address: 2
+    modbus_id: modbus1
+    update_interval: never
+    setup_priority: -10
+
+  - id: sdm72_living
+    address: 3
+    modbus_id: modbus1
+    update_interval: never
+    setup_priority: -10
+
+globals:
+  - id: wifi_drops
+    type: int
+    restore_value: false
+    initial_value: "0"
+
+  # last net grid power we polled the PV meter on - used to detect a P1 refresh
+  - id: last_p1_net
+    type: float
+    restore_value: false
+    initial_value: "NAN"
+
+  # Per-phase energy reconstruction for all three SDM72 meters. The SDM72D-M has
+  # no per-phase energy registers, so power is integrated locally every second
+  # and re-anchored to each meter's own Total Energy whenever that register
+  # ticks: the gap between our running sum and the meter's real delta is
+  # distributed over the phases proportional to their share.
+  #
+  # Index layout, three phases per meter:
+  #   0-2 = PV L1..L3    3-5 = Kitchen L1..L3    6-8 = Living L1..L3
+  #
+  # One array rather than nine separate globals, deliberately: NVS stores this as
+  # a single blob, so a sync writes one entry instead of nine.
+  - id: integ
+    type: float[9]
+    initial_value: "{0,0,0,0,0,0,0,0,0}"
+
+  - id: energy_kwh
+    type: float[9]
+    restore_value: true
+    initial_value: "{0,0,0,0,0,0,0,0,0}"
+
+  # NOT restored, deliberately. After an unclean reboot this comes back as NAN
+  # and the next Total Energy reading simply re-baselines, instead of reconciling
+  # a fresh meter delta against a counter that is up to flash_write_interval old.
+  - id: prev_total
+    type: float[3]
+    initial_value: "{NAN, NAN, NAN}"
+
+interval:
+  - interval: 1s
+    then:
+      - lambda: |-
+          // --- sync point: poll the meters when the P1 figures actually move ---
+          static uint8_t since_poll = 0;
+          since_poll++;
+          const float imp = id(power_import).state;
+          const float expo = id(power_export).state;
+          if (!isnan(imp) && !isnan(expo)) {
+            const float net = imp - expo;
+            // the 15s fallback covers a perfectly constant load, where the P1
+            // value never changes and we would otherwise stop polling entirely
+            if (net != id(last_p1_net) || since_poll >= 15) {
+              id(last_p1_net) = net;
+              since_poll = 0;
+              id(sdm72_pv)->update();
+              id(sdm72_kitchen)->update();
+              id(sdm72_living)->update();
+            }
+          } else if (since_poll >= 15) {
+            since_poll = 0;   // no P1 data yet - keep the meters alive anyway
+            id(sdm72_pv)->update();
+            id(sdm72_kitchen)->update();
+            id(sdm72_living)->update();
+          }
+
+          // --- per-phase energy integration, all three meters ---
+          // Power samples arrive ~10s apart instead of every second, so this is
+          // a zero-order hold; the Total Energy reconciliation on each meter
+          // corrects the resulting drift against that meter's own ground truth.
+          const float phase_power[9] = {
+            id(pv_power_l1).state,      id(pv_power_l2).state,      id(pv_power_l3).state,
+            id(kitchen_power_l1).state, id(kitchen_power_l2).state, id(kitchen_power_l3).state,
+            id(living_power_l1).state,  id(living_power_l2).state,  id(living_power_l3).state,
+          };
+          for (int i = 0; i < 9; i++) {
+            const float p = phase_power[i];
+            if (isnan(p)) continue;
+            id(integ)[i] += p;                      // share tracker, reset on each reconcile
+            id(energy_kwh)[i] += p / 3600000.0f;    // W sampled each second -> kWh
+          }
+
+p1_dsmr:
+  uart_id: uart_p1
+  update_interval: 1s
+  obis_validity: 10s
+  sensors:
+    # gas consumption
+    - obis: "0-1:24.2.1"
+      name: "Gas Consumed"
+      unit_of_measurement: "m³"
+      device_class: gas
+      state_class: total_increasing
+      accuracy_decimals: 3
+      icon: "mdi:meter-gas"
+
+    # hidden sensors for power calculations
+    - id: power_import
+      obis: "1-0:1.7.0"
+      name: "Power Import"
+      unit_of_measurement: "W"
+      device_class: power
+      state_class: measurement
+      internal: true
+    - id: power_export
+      obis: "1-0:2.7.0"
+      name: "Power Export"
+      unit_of_measurement: "W"
+      device_class: power
+      state_class: measurement
+      internal: true
+
+    # internal power sensors per phase
+    - id: power_l1_import
+      obis: "1-0:21.7.0"
+      name: "Power L1 Import"
+      unit_of_measurement: "W"
+      device_class: power
+      state_class: measurement
+      internal: true
+    - id: power_l1_export
+      obis: "1-0:22.7.0"
+      name: "Power L1 Export"
+      unit_of_measurement: "W"
+      device_class: power
+      state_class: measurement
+      internal: true
+    - id: power_l2_import
+      obis: "1-0:41.7.0"
+      name: "Power L2 Import"
+      unit_of_measurement: "W"
+      device_class: power
+      state_class: measurement
+      internal: true
+    - id: power_l2_export
+      obis: "1-0:42.7.0"
+      name: "Power L2 Export"
+      unit_of_measurement: "W"
+      device_class: power
+      state_class: measurement
+      internal: true
+    - id: power_l3_import
+      obis: "1-0:61.7.0"
+      name: "Power L3 Import"
+      unit_of_measurement: "W"
+      device_class: power
+      state_class: measurement
+      internal: true
+    - id: power_l3_export
+      obis: "1-0:62.7.0"
+      name: "Power L3 Export"
+      unit_of_measurement: "W"
+      device_class: power
+      state_class: measurement
+      internal: true
+
+    # internal energy sensors per tariff
+    - id: energy_import_t1
+      obis: "1-0:1.8.1"
+      name: "Energy Import T1"
+      unit_of_measurement: "kWh"
+      device_class: energy
+      state_class: total_increasing
+      internal: true
+    - id: energy_import_t2
+      obis: "1-0:1.8.2"
+      name: "Energy Import T2"
+      unit_of_measurement: "kWh"
+      device_class: energy
+      state_class: total_increasing
+      internal: true
+    - id: energy_export_t1
+      obis: "1-0:2.8.1"
+      name: "Energy Export T1"
+      unit_of_measurement: "kWh"
+      device_class: energy
+      state_class: total_increasing
+      internal: true
+    - id: energy_export_t2
+      obis: "1-0:2.8.2"
+      name: "Energy Export T2"
+      unit_of_measurement: "kWh"
+      device_class: energy
+      state_class: total_increasing
+      internal: true
+
+    # published voltage sensors per phase
+    - id: voltage_l1
+      obis: "1-0:32.7.0"
+      name: "Grid Voltage L1"
+      icon: "mdi:sine-wave"
+      unit_of_measurement: "V"
+      device_class: voltage
+      state_class: measurement
+      accuracy_decimals: 1
+      filters:
+        - delta: 0.1
+    - id: voltage_l2
+      obis: "1-0:52.7.0"
+      name: "Grid Voltage L2"
+      icon: "mdi:sine-wave"
+      unit_of_measurement: "V"
+      device_class: voltage
+      state_class: measurement
+      accuracy_decimals: 1
+      filters:
+        - delta: 0.1
+    - id: voltage_l3
+      obis: "1-0:72.7.0"
+      name: "Grid Voltage L3"
+      icon: "mdi:sine-wave"
+      unit_of_measurement: "V"
+      device_class: voltage
+      state_class: measurement
+      accuracy_decimals: 1
+      filters:
+        - delta: 0.1
+
+    # published current sensors per phase
+    - id: current_l1
+      obis: "1-0:31.7.0"
+      name: "Grid Current L1"
+      icon: "mdi:current-ac"
+      unit_of_measurement: "A"
+      device_class: current
+      state_class: measurement
+      accuracy_decimals: 2
+      filters:
+        - delta: 0.01
+    - id: current_l2
+      obis: "1-0:51.7.0"
+      name: "Grid Current L2"
+      icon: "mdi:current-ac"
+      unit_of_measurement: "A"
+      device_class: current
+      state_class: measurement
+      accuracy_decimals: 2
+      filters:
+        - delta: 0.01
+    - id: current_l3
+      obis: "1-0:71.7.0"
+      name: "Grid Current L3"
+      icon: "mdi:current-ac"
+      unit_of_measurement: "A"
+      device_class: current
+      state_class: measurement
+      accuracy_decimals: 2
+      filters:
+        - delta: 0.01
+
+sensor:
+  # -- diagnostics --
+  # 10s rather than the usual 60s: reception in the meterkast is the open
+  # question for this board, and a slow sensor hides short dips
+  - platform: wifi_signal
+    name: "WiFi Signal Strength"
+    icon: "mdi:wifi"
+    update_interval: 10s
+
+  - platform: uptime
+    name: "Uptime"
+    icon: "mdi:timer-outline"
+    update_interval: 60s
+
+  # this board runs hot - keep an eye on the die temperature
+  - platform: internal_temperature
+    name: "Internal Temperature"
+    icon: "mdi:thermometer"
+    update_interval: 30s
+
+  - platform: template
+    name: "WiFi Drops"
+    icon: "mdi:wifi-off"
+    entity_category: diagnostic
+    lambda: return id(wifi_drops);
+    accuracy_decimals: 0
+    state_class: total_increasing
+    update_interval: 60s
+
+  # -- P1: the power for each phase (import - export) --
+  - id: power_l1
+    platform: template
+    name: "Grid Power L1"
+    icon: "mdi:flash"
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: 1s
+    filters:
+      - delta: 1
+    lambda: |-
+      if (isnan(id(power_l1_import).state) || isnan(id(power_l1_export).state)) return NAN;
+      return id(power_l1_import).state - id(power_l1_export).state;
+
+  - id: power_l2
+    platform: template
+    name: "Grid Power L2"
+    icon: "mdi:flash"
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: 1s
+    filters:
+      - delta: 1
+    lambda: |-
+      if (isnan(id(power_l2_import).state) || isnan(id(power_l2_export).state)) return NAN;
+      return id(power_l2_import).state - id(power_l2_export).state;
+
+  - id: power_l3
+    platform: template
+    name: "Grid Power L3"
+    icon: "mdi:flash"
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: 1s
+    filters:
+      - delta: 1
+    lambda: |-
+      if (isnan(id(power_l3_import).state) || isnan(id(power_l3_export).state)) return NAN;
+      return id(power_l3_import).state - id(power_l3_export).state;
+
+  # the total net power (import - export)
+  - id: net_power
+    platform: template
+    name: "Grid Power"
+    icon: "mdi:flash"
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: 1s
+    filters:
+      - delta: 1
+    lambda: |-
+      if (isnan(id(power_import).state) || isnan(id(power_export).state)) return NAN;
+      return id(power_import).state - id(power_export).state;
+
+  # the total current
+  - id: current_total
+    platform: template
+    name: "Grid Current"
+    icon: "mdi:current-ac"
+    unit_of_measurement: "A"
+    device_class: current
+    state_class: measurement
+    accuracy_decimals: 2
+    update_interval: 1s
+    filters:
+      - delta: 0.01
+    lambda: |-
+      float currents[3];
+      currents[0] = id(current_l1).state;
+      currents[1] = id(current_l2).state;
+      currents[2] = id(current_l3).state;
+      float total = 0.0f;
+      bool has = false;
+      for (int i = 0; i < 3; i++) {
+        if (!isnan(currents[i])) { total += currents[i]; has = true; }
+      }
+      return has ? total : NAN;
+
+  # the total net electricity (import - export)
+  - platform: template
+    name: "Grid Consumed"
+    id: grid_consumed
+    icon: "mdi:counter"
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total
+    accuracy_decimals: 3
+    update_interval: 60s
+    filters:
+      - delta: 0.01
+    lambda: |-
+      float value = 0.0;
+      bool has_data = false;
+      if (!isnan(id(energy_import_t1).state)) { value += id(energy_import_t1).state; has_data = true; }
+      if (!isnan(id(energy_import_t2).state)) { value += id(energy_import_t2).state; has_data = true; }
+      if (!isnan(id(energy_export_t1).state)) { value -= id(energy_export_t1).state; has_data = true; }
+      if (!isnan(id(energy_export_t2).state)) { value -= id(energy_export_t2).state; has_data = true; }
+      return has_data ? value : NAN;
+
+  - platform: template
+    name: "Grid Import"
+    icon: "mdi:counter"
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 3
+    update_interval: 60s
+    filters:
+      - delta: 0.01
+    lambda: |-
+      float value = 0.0;
+      bool has_data = false;
+      if (!isnan(id(energy_import_t1).state)) { value += id(energy_import_t1).state; has_data = true; }
+      if (!isnan(id(energy_import_t2).state)) { value += id(energy_import_t2).state; has_data = true; }
+      return has_data ? value : NAN;
+
+  - platform: template
+    name: "Grid Export"
+    icon: "mdi:counter"
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 3
+    update_interval: 60s
+    filters:
+      - delta: 0.01
+    lambda: |-
+      float value = 0.0;
+      bool has_data = false;
+      if (!isnan(id(energy_export_t1).state)) { value += id(energy_export_t1).state; has_data = true; }
+      if (!isnan(id(energy_export_t2).state)) { value += id(energy_export_t2).state; has_data = true; }
+      return has_data ? value : NAN;
+
+  # -- PV submeter (SDM72D-M on Modbus address 1) --
+  # No voltage registers here: the P1 already publishes the same three phase
+  # voltages, so reading them again only costs bus time.
+  - platform: modbus_controller
+    modbus_controller_id: sdm72_pv
+    name: "PV Power L1"
+    id: pv_power_l1
+    register_type: read
+    address: 0x000C
+    value_type: FP32
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+
+  - platform: modbus_controller
+    modbus_controller_id: sdm72_pv
+    name: "PV Power L2"
+    id: pv_power_l2
+    register_type: read
+    address: 0x000E
+    value_type: FP32
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+
+  - platform: modbus_controller
+    modbus_controller_id: sdm72_pv
+    name: "PV Power L3"
+    id: pv_power_l3
+    register_type: read
+    address: 0x0010
+    value_type: FP32
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+
+  # read after the per-phase registers, so House Load is published with a
+  # complete and freshly synced set
+  - platform: modbus_controller
+    modbus_controller_id: sdm72_pv
+    name: "PV Power"
+    id: pv_power_total
+    register_type: read
+    address: 0x0034
+    value_type: FP32
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+    on_value:
+      then:
+        - lambda: |-
+            const float imp = id(power_import).state;
+            const float expo = id(power_export).state;
+            if (isnan(x) || isnan(imp) || isnan(expo)) return;
+            // house load = PV + import - export, both samples from the same instant
+            id(house_load).publish_state(x + imp - expo);
+
+  # ground truth for the per-phase split; ticks in coarse ~0.01 kWh steps
+  - platform: modbus_controller
+    modbus_controller_id: sdm72_pv
+    name: "PV Energy"
+    id: pv_energy_total
+    register_type: read
+    address: 0x0156
+    value_type: FP32
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 2
+    skip_updates: 9
+    on_value:
+      then:
+        - lambda: |-
+            // reconcile PV (meter 0, phases 0-2) against its own Total Energy
+            const int m = 0, base = 0;
+            if (isnan(id(prev_total)[m])) {
+              id(prev_total)[m] = x;
+              return;
+            }
+            const float meter_delta = x - id(prev_total)[m];
+            id(prev_total)[m] = x;
+            if (meter_delta <= 0.0f) return;  // meter hasn't ticked yet - integ keeps accumulating
+
+            float sum = 0.0f;
+            for (int i = 0; i < 3; i++) sum += id(integ)[base + i];
+            if (sum <= 0.0f) return;
+
+            // energy_kwh was already updated live above; this only corrects the
+            // gap between our own running sum and the meter's truth
+            const float error = meter_delta - (sum / 3600000.0f);
+            for (int i = 0; i < 3; i++) {
+              id(energy_kwh)[base + i] += error * (id(integ)[base + i] / sum);
+              id(integ)[base + i] = 0.0f;
+            }
+
+  - platform: template
+    name: "PV Energy L1"
+    id: pv_energy_l1_sensor
+    lambda: return id(energy_kwh)[0];
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 3
+    update_interval: 10s
+
+  - platform: template
+    name: "PV Energy L2"
+    id: pv_energy_l2_sensor
+    lambda: return id(energy_kwh)[1];
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 3
+    update_interval: 10s
+
+  - platform: template
+    name: "PV Energy L3"
+    id: pv_energy_l3_sensor
+    lambda: return id(energy_kwh)[2];
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 3
+    update_interval: 10s
+
+  # -- Kitchen submeter (SDM72D-M on Modbus address 2) --
+  - platform: modbus_controller
+    modbus_controller_id: sdm72_kitchen
+    name: "Kitchen Power L1"
+    id: kitchen_power_l1
+    register_type: read
+    address: 0x000C
+    value_type: FP32
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+
+  - platform: modbus_controller
+    modbus_controller_id: sdm72_kitchen
+    name: "Kitchen Power L2"
+    id: kitchen_power_l2
+    register_type: read
+    address: 0x000E
+    value_type: FP32
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+
+  - platform: modbus_controller
+    modbus_controller_id: sdm72_kitchen
+    name: "Kitchen Power L3"
+    id: kitchen_power_l3
+    register_type: read
+    address: 0x0010
+    value_type: FP32
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+
+
+  # read after the per-phase registers so the total lands on a complete set
+  - platform: modbus_controller
+    modbus_controller_id: sdm72_kitchen
+    name: "Kitchen Power"
+    id: kitchen_power_total
+    register_type: read
+    address: 0x0034
+    value_type: FP32
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+
+  - platform: modbus_controller
+    modbus_controller_id: sdm72_kitchen
+    name: "Kitchen Energy"
+    id: kitchen_energy_total
+    register_type: read
+    address: 0x0156
+    value_type: FP32
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 2
+    skip_updates: 9
+    on_value:
+      then:
+        - lambda: |-
+            // reconcile Kitchen (meter 1, phases 3-5) against its own Total Energy
+            const int m = 1, base = 3;
+            if (isnan(id(prev_total)[m])) {
+              id(prev_total)[m] = x;
+              return;
+            }
+            const float meter_delta = x - id(prev_total)[m];
+            id(prev_total)[m] = x;
+            if (meter_delta <= 0.0f) return;
+
+            float sum = 0.0f;
+            for (int i = 0; i < 3; i++) sum += id(integ)[base + i];
+            if (sum <= 0.0f) return;
+
+            const float error = meter_delta - (sum / 3600000.0f);
+            for (int i = 0; i < 3; i++) {
+              id(energy_kwh)[base + i] += error * (id(integ)[base + i] / sum);
+              id(integ)[base + i] = 0.0f;
+            }
+
+  - platform: template
+    name: "Kitchen Energy L1"
+    id: kitchen_energy_l1_sensor
+    lambda: return id(energy_kwh)[3];
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 3
+    update_interval: 10s
+
+  - platform: template
+    name: "Kitchen Energy L2"
+    id: kitchen_energy_l2_sensor
+    lambda: return id(energy_kwh)[4];
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 3
+    update_interval: 10s
+
+  - platform: template
+    name: "Kitchen Energy L3"
+    id: kitchen_energy_l3_sensor
+    lambda: return id(energy_kwh)[5];
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 3
+    update_interval: 10s
+
+  # -- Living submeter (SDM72D-M on Modbus address 3) --
+  - platform: modbus_controller
+    modbus_controller_id: sdm72_living
+    name: "Living Power L1"
+    id: living_power_l1
+    register_type: read
+    address: 0x000C
+    value_type: FP32
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+
+  - platform: modbus_controller
+    modbus_controller_id: sdm72_living
+    name: "Living Power L2"
+    id: living_power_l2
+    register_type: read
+    address: 0x000E
+    value_type: FP32
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+
+  - platform: modbus_controller
+    modbus_controller_id: sdm72_living
+    name: "Living Power L3"
+    id: living_power_l3
+    register_type: read
+    address: 0x0010
+    value_type: FP32
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+
+
+  # read after the per-phase registers so the total lands on a complete set
+  - platform: modbus_controller
+    modbus_controller_id: sdm72_living
+    name: "Living Power"
+    id: living_power_total
+    register_type: read
+    address: 0x0034
+    value_type: FP32
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+
+  - platform: modbus_controller
+    modbus_controller_id: sdm72_living
+    name: "Living Energy"
+    id: living_energy_total
+    register_type: read
+    address: 0x0156
+    value_type: FP32
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 2
+    skip_updates: 9
+    on_value:
+      then:
+        - lambda: |-
+            // reconcile Living (meter 2, phases 6-8) against its own Total Energy
+            const int m = 2, base = 6;
+            if (isnan(id(prev_total)[m])) {
+              id(prev_total)[m] = x;
+              return;
+            }
+            const float meter_delta = x - id(prev_total)[m];
+            id(prev_total)[m] = x;
+            if (meter_delta <= 0.0f) return;
+
+            float sum = 0.0f;
+            for (int i = 0; i < 3; i++) sum += id(integ)[base + i];
+            if (sum <= 0.0f) return;
+
+            const float error = meter_delta - (sum / 3600000.0f);
+            for (int i = 0; i < 3; i++) {
+              id(energy_kwh)[base + i] += error * (id(integ)[base + i] / sum);
+              id(integ)[base + i] = 0.0f;
+            }
+
+  - platform: template
+    name: "Living Energy L1"
+    id: living_energy_l1_sensor
+    lambda: return id(energy_kwh)[6];
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 3
+    update_interval: 10s
+
+  - platform: template
+    name: "Living Energy L2"
+    id: living_energy_l2_sensor
+    lambda: return id(energy_kwh)[7];
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 3
+    update_interval: 10s
+
+  - platform: template
+    name: "Living Energy L3"
+    id: living_energy_l3_sensor
+    lambda: return id(energy_kwh)[8];
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 3
+    update_interval: 10s
+
+  # -- the payoff of merging both sources onto one controller --
+  # Published from PV Power's on_value, never on its own schedule. That fires on
+  # every Modbus read, not only when the value changes: modbus_controller calls
+  # publish_state() unconditionally and publish_state() always runs the callback.
+  # So a perfectly steady PV output still refreshes this.
+  # The one way to break that is adding a filter (delta, throttle, ...) to PV
+  # Power - a suppressed publish silently stops House Load too.
+  - platform: template
+    name: "House Load"
+    id: house_load
+    icon: "mdi:home-lightning-bolt"
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: never
+
+  # The cumulative counterpart of House Load. Grid Consumed is already net
+  # (import - export), so adding PV gives everything the house drew, whatever
+  # its source. Both counters move slowly, so this runs on its own 60s schedule
+  # rather than the Modbus sync - energy needs no sub-second alignment.
+  #
+  # state_class is `total`, not `total_increasing`: Grid Consumed itself falls
+  # whenever export runs ahead of import, and a total_increasing sensor would
+  # read such a dip as a counter reset and book a huge phantom delta.
+  - platform: template
+    name: "House Energy"
+    id: house_energy
+    icon: "mdi:home-lightning-bolt"
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total
+    accuracy_decimals: 3
+    update_interval: 60s
+    filters:
+      - delta: 0.01
+    lambda: |-
+      if (isnan(id(grid_consumed).state) || isnan(id(pv_energy_total).state)) return NAN;
+      return id(grid_consumed).state + id(pv_energy_total).state;
