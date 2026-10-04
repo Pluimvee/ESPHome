@@ -1,4 +1,4 @@
-﻿# Copyright (c) 2025 Pluimvee
+﻿# Copyright (c) 2026 Pluimvee
 # Configuration For the Intergas HRE24/18 Boiler
 
 # First some basic configuration
@@ -67,7 +67,6 @@ uart:
 # Some code to allow communicating with the Intergas Boiler
 external_components:
   - source: github://Pluimvee/esphome-intergas
-  # - source: C:/Users/erikv/OneDrive/Archive/Erik/Hobby/ESPHome/components/esphome-intergas/components
   # refresh: 1min
 
 # the intergas communicaiton module
@@ -111,16 +110,50 @@ sensor:
       name: "Pump"
     flow:
       name: "DHW Flow"
+      filters:
+        - clamp:
+            min_value: 0
+            max_value: 20
+            ignore_out_of_range: true
     dhw:
       name: "DHW Outlet"
     pressure:
       name: "CH Pressure"
     power:
       name: "Power"
+      filters:
+        - clamp:
+            min_value: 0
+            max_value: 30
+            ignore_out_of_range: true
     energy_ch:
       name: "CH Energy"
+      # the counters only go up, at most a few m3 per day. A corrupt frame gives a single
+      # outlier, so drop decreases and jumps > 1 m3. Re-base after 3 consistent readings,
+      # so a wrong first value after a reboot cannot block the counter forever.
+      filters: &counter_filter
+        - lambda: |-
+            static float last = NAN;   // last accepted value
+            static float cand = NAN;   // candidate new base
+            static int count = 0;
+            if (std::isnan(x) || x <= 0.0f) return {};
+            if (!std::isnan(last) && x >= last - 0.01f && x <= last + 1.0f) {
+              last = x;
+              count = 0;
+              return x;
+            }
+            if (!std::isnan(cand) && x >= cand - 0.01f && x <= cand + 1.0f)
+              count++;
+            else
+              count = 1;
+            cand = x;
+            if (count < 3) return {};
+            last = x;
+            count = 0;
+            return x;
     energy_dhw:
       name: "DHW Energy"
+      filters: *counter_filter
     room:
       name: "Room Current"
     room_set:
