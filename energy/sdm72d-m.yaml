@@ -1,16 +1,42 @@
 # Copyright (c) 2026 Pluimvee
 # SDM72D-M energy meter reader via Modbus RTU
 #
-# This meter has no per-phase energy registers (confirmed against the
-# official SDM72CT-M protocol doc and by testing). Per-phase kWh is
-# reconstructed locally: active power per phase is integrated every second
-# directly into energy_lX_kwh, so the values move in real time. The meter's
-# own Total Energy register only updates in coarse steps (~0.01 kWh), so it
-# can't be used as the primary source - instead, whenever it does tick, the
-# small gap between our own running sum and the meter's real delta is
-# distributed across the phases proportional to their share since the last
-# tick. This keeps the long-term total anchored to the meter's ground truth
-# without needing a resolvable meter step before anything becomes visible.
+# This meter has no per-phase energy registers. Re-verified on the hardware
+# 2026-09-23: all three families from the SDM630 manual - per-phase total
+# (0x0166-0x016a), import (0x015a-0x015e) and export (0x0160-0x0164) - return
+# exactly 0.000. The meter answers those addresses without an exception, so the
+# registers exist in the map but are simply never populated on this model.
+#
+# So per-phase kWh is reconstructed locally: active power per phase is integrated
+# every second into energy_lX_kwh, so the values move in real time. The meter's own
+# counter only steps in ~0.01 kWh increments, so it cannot be the primary source -
+# instead, whenever it moves, the gap between our running sum and the meter's real
+# delta is distributed across the phases. That keeps the long-term total anchored
+# to ground truth without needing a resolvable meter step before anything shows.
+#
+# Three things about that anchoring are easy to get wrong, and all three were:
+#
+# 1. NET, not throughput. The obvious total register (0x0156) accumulates import +
+#    export as positive magnitude - measured on the meter: 10996.052 + 23.143 =
+#    11019.195, exactly its own reading. It therefore RISES at night while a PV
+#    inverter draws, booking that draw as production. Import (0x0048) minus Export
+#    (0x004A) is the real net, and it is also precisely the time-integral of the
+#    signed power we integrate. Anchoring on throughput made those two disagree in
+#    sign, so every nightly correction was twice the real energy.
+#
+# 2. Split by SIGNED share, but bound how far it can amplify. Each phase's own
+#    measurement is already booked per second; the reconcile only spreads the small
+#    residual, and it must keep each phase's direction - a phase consuming while
+#    another produces should be corrected downwards, not dragged along. Signed and
+#    magnitude shares are identical whenever all three phases carry the same sign;
+#    they only differ in mixed-sign windows, and there the magnitude split biases
+#    the consuming phase upwards. The catch is that integ[i]/sum explodes when the
+#    phases nearly cancel - that is what produced +-44 kWh swings - so the ratio
+#    sum_abs/|sum|, which is exactly that amplification, is capped.
+#
+# 3. Advance prev_total only when the correction is actually applied. Bailing out
+#    after advancing it consumes a real meter delta and drops it for good, which
+#    desynchronises the phase sum from the meter permanently.
 
 substitutions:
   device_id: sdm72d-m
@@ -226,44 +252,111 @@ sensor:
     state_class: measurement
     accuracy_decimals: 0
 
-  # --- Total Energy (0x0156), ground truth for the per-phase split below, ~10s ---
+  # --- Net energy (Import 0x0048 - Export 0x004A), ground truth below, ~10s ---
+  # The two registers are adjacent, so they read as ONE 4-register command - the
+  # same single transaction the old 0x0156 read cost. Both stay internal; what is
+  # published is their difference. See the header for why net rather than 0x0156.
   - platform: modbus_controller
     modbus_controller_id: sdm72dm
-    name: "Total Energy"
-    id: energy_total
+    id: energy_import
+    internal: true
     register_type: read
-    address: 0x0156
+    address: 0x0048
     value_type: FP32
-    unit_of_measurement: "kWh"
-    device_class: energy
-    state_class: total_increasing
-    accuracy_decimals: 2
+    accuracy_decimals: 3
+    skip_updates: 9
+
+  - platform: modbus_controller
+    modbus_controller_id: sdm72dm
+    id: energy_export
+    internal: true
+    register_type: read
+    address: 0x004A
+    value_type: FP32
+    accuracy_decimals: 3
     skip_updates: 9
     on_value:
       then:
         - lambda: |-
+            // Export is the second sensor in the block, so Import is already parsed
+            // by the time this fires.
+            //
+            // The per-second interval has ALREADY booked each phase's own measurement
+            // into energy_lX_kwh. What happens here is only the small residual between
+            // that running sum and what the meter itself reports, spread over the
+            // phases by SIGNED share so each keeps its own direction. The three shares
+            // sum to exactly 1, so the phases land on meter_delta together.
+            const float imp = id(energy_import).state;
+            if (isnan(imp) || isnan(x)) return;
+            const float net = imp - x;               // x is Export
+            id(energy_total).publish_state(net);
+
             if (isnan(id(prev_total_energy))) {
-              id(prev_total_energy) = x;
+              id(prev_total_energy) = net;           // first reading only baselines
               return;
             }
-            const float meter_delta = x - id(prev_total_energy);
-            id(prev_total_energy) = x;
-            if (meter_delta <= 0.0f) return;  // meter hasn't ticked yet - keep waiting, integ_lX keeps accumulating
+
+            // Resolution floor: net is a difference of two FP32s in the thousands, so
+            // its own quantisation is ~0.001 kWh while a real register tick is 0.01.
+            // Below this the "delta" is float noise - skip the reconcile entirely and
+            // leave prev_total_energy and integ_lX standing, so the next cycle measures
+            // the full period instead of losing it.
+            constexpr float MIN_DELTA = 0.005f;      // kWh
+            // How far the signed split may amplify - see header note 2.
+            constexpr float MAX_AMP = 4.0f;
+
+            const float meter_delta = net - id(prev_total_energy);
+            if (fabsf(meter_delta) > 500.0f) {
+              // A counter reset reads as a five-figure jump; no submeter accumulates
+              // 500 kWh between two reconciles. Re-baseline, never correct.
+              id(prev_total_energy) = net;
+              id(integ_l1) = 0.0f;
+              id(integ_l2) = 0.0f;
+              id(integ_l3) = 0.0f;
+              return;
+            }
+            if (fabsf(meter_delta) < MIN_DELTA) return;   // carry forward
 
             const float sum = id(integ_l1) + id(integ_l2) + id(integ_l3);
-            if (sum <= 0.0f) return;
+            const float sum_abs = fabsf(id(integ_l1)) + fabsf(id(integ_l2)) + fabsf(id(integ_l3));
+            const float sum_kwh = sum / 3600000.0f;
 
-            // energy_lX_kwh was already updated live every second above; this only
-            // corrects the small gap between our own running sum and the meter's truth
-            const float our_delta = sum / 3600000.0f;
-            const float error = meter_delta - our_delta;
+            if (sum_kwh == 0.0f || (sum_kwh > 0.0f) != (meter_delta > 0.0f) ||
+                sum_abs > MAX_AMP * fabsf(sum)) {
+              // Either the local count points the other way than the meter (a missed
+              // update after a reboot or a Modbus gap), or the phases nearly cancel and
+              // the split would amplify wildly. Neither can be attributed sensibly:
+              // drop the correction and re-baseline rather than guess.
+              ESP_LOGW("recon", "delta=%.4f sum=%.6f amp=%.1f - skipped",
+                       meter_delta, sum_kwh, sum_abs / (fabsf(sum) + 1e-9f));
+              id(prev_total_energy) = net;
+              id(integ_l1) = 0.0f;
+              id(integ_l2) = 0.0f;
+              id(integ_l3) = 0.0f;
+              return;
+            }
 
+            id(prev_total_energy) = net;
+            const float error = meter_delta - sum_kwh;
             id(energy_l1_kwh) += error * (id(integ_l1) / sum);
             id(energy_l2_kwh) += error * (id(integ_l2) / sum);
             id(energy_l3_kwh) += error * (id(integ_l3) / sum);
             id(integ_l1) = 0.0f;
             id(integ_l2) = 0.0f;
             id(integ_l3) = 0.0f;
+            ESP_LOGD("recon", "delta=%.4f sum=%.6f error=%.6f", meter_delta, sum_kwh, error);
+
+  # Net total, published from the reconcile above so it lands with the phases.
+  # `total`, not `total_increasing`: a net counter falls whenever the reverse
+  # direction runs ahead - every night, on a PV meter.
+  - platform: template
+    name: "Total Energy"
+    id: energy_total
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total
+    accuracy_decimals: 3
+    update_interval: never
 
   # --- Locally reconstructed per-phase energy, corrected against Total Energy above ---
   - platform: template
@@ -272,7 +365,12 @@ sensor:
     lambda: return id(energy_l1_kwh);
     unit_of_measurement: "kWh"
     device_class: energy
-    state_class: total_increasing
+    # `total`, not `total_increasing`: a reconstructed counter legitimately dips -
+    # negative power subtracts live, and the reconciliation applies a negative
+    # correction whenever the integration ran ahead of the meter. total_increasing
+    # tolerates only a drop below 10% and reads anything larger as a counter reset,
+    # booking it as phantom energy.
+    state_class: total
     accuracy_decimals: 3
     update_interval: 10s
 
@@ -282,7 +380,12 @@ sensor:
     lambda: return id(energy_l2_kwh);
     unit_of_measurement: "kWh"
     device_class: energy
-    state_class: total_increasing
+    # `total`, not `total_increasing`: a reconstructed counter legitimately dips -
+    # negative power subtracts live, and the reconciliation applies a negative
+    # correction whenever the integration ran ahead of the meter. total_increasing
+    # tolerates only a drop below 10% and reads anything larger as a counter reset,
+    # booking it as phantom energy.
+    state_class: total
     accuracy_decimals: 3
     update_interval: 10s
 
@@ -292,6 +395,11 @@ sensor:
     lambda: return id(energy_l3_kwh);
     unit_of_measurement: "kWh"
     device_class: energy
-    state_class: total_increasing
+    # `total`, not `total_increasing`: a reconstructed counter legitimately dips -
+    # negative power subtracts live, and the reconciliation applies a negative
+    # correction whenever the integration ran ahead of the meter. total_increasing
+    # tolerates only a drop below 10% and reads anything larger as a counter reset,
+    # booking it as phantom energy.
+    state_class: total
     accuracy_decimals: 3
     update_interval: 10s

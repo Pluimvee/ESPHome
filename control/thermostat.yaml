@@ -1,0 +1,681 @@
+# Copyright (c) 2026 Pluimvee
+# Thermostat - WEMOS D1 mini ESP32 + 0.96" OLED I2C SSD1315
+#              128x64 (geel/blauw) met 4 toetsen + OpenTherm + DS18B20
+#
+# Afgeleid van smartcontrol.yaml. Verschillen: display ST7735 SPI TFT ->
+# SSD1315 I2C OLED 128x64 met 4 drukknoppen, 4 vloersensoren op een tweede
+# 1-wire bus, en een eigen pin-indeling (zie hieronder). OT-pinnen zijn gelijk.
+#
+# Displaymodule header:  GND  VCC  SCL  SDA  K4  K3  K2  K1
+# De 4 toetsen schakelen naar GND -> interne pull-up + inverted (active low).
+#
+# VCC MOET OP 3V3, NIET OP 5V.
+# De module heeft een 3.3V LDO voor het OLED-paneel, maar de 4.7k pull-ups van
+# de toetsen hangen aan VCC_IN, niet aan de geregelde rail - ondanks wat de
+# schematic van de fabrikant suggereert. Gemeten: met 5V op VCC staan alle vier
+# de KeyIn-lijnen op 3,7V, boven de absolute maximum rating van de ESP32
+# (VDD+0,3 = 3,6V). De ESD-klemdiodes gaan dan geleiden, wat de hele GPIO-bank
+# onbetrouwbaar maakt - toetsen reageren dan niet. Met 3V3 op VCC staan de
+# lijnen in rust op ~3,3V (of ~2,9V als je een interne pull-down inschakelt,
+# wat een handige continuiteitstest is) en werkt alles.
+#
+# Een interne pull-up is strikt genomen overbodig naast die 4.7k, maar staat
+# er bewust in: een losgeraakte draad leest dan als "niet ingedrukt" i.p.v. te
+# gaan zweven.
+#
+# LET OP BIJ GPIO-INTERRUPTS OP DIT BORD (opgelost, maar goed om te weten).
+# Sinds ESPHome 2025.7 gebruikt een gpio binary_sensor op ESP32 standaard
+# interrupts, en zet hij zijn eigen loop uit (disable_loop) zodra er geen
+# verandering hangt. Vuurt de interrupt nooit, dan blijft de state voorgoed op
+# de waarde van vlak na de boot staan - de toets lijkt dan simpelweg dood,
+# zonder enige foutmelding tijdens bedrijf.
+#
+# Dat gebeurde hier: er is maar een GPIO ISR-service voor de hele chip, en
+# OpenTherm installeerde die zelf als eerste. ESPHome's attach_interrupt houdt
+# de installatie bij in een eigen statische vlag, installeert dan opnieuw,
+# krijgt ESP_ERR_INVALID_STATE ("draait al") en behandelt dat als fataal: het
+# doet `return` VOOR gpio_isr_handler_add(). De pin kreeg dus nooit een handler.
+# ESP-IDF zelf kan dit prima aan - een handler per pin is het normale model;
+# het is puur een boekhoudfout in ESPHome.
+#
+# Opgelost in onze OpenTherm-fork: die gebruikt nu in_pin_->attach_interrupt()
+# van ESPHome in plaats van de rauwe ESP-IDF-aanroepen, waardoor de boekhouding
+# klopt en alle GPIO-interrupts naast elkaar werken. Zie de toelichting in
+# components/esphome-opentherm/components/opentherm/opentherm.cpp.
+#
+# Draai je ooit met een OpenTherm-versie van voor die fix, dan is het symptoom
+# dode toetsen en is `use_interrupt: false` op elke gpio binary_sensor de
+# workaround (polling, voor drukknoppen ruim voldoende).
+#
+# Pin mapping (WEMOS D1 mini ESP32, dubbele headerrijen):
+#   GPIO26 = toets K1 (^)    D0   links binnen  )
+#   GPIO18 = toets K2 (v)    D5   links binnen  )  vier aaneengesloten
+#   GPIO19 = toets K3 (#)    D6   links binnen  )  posities = het lintje
+#   GPIO23 = toets K4 (*)    D7   links binnen  )  van de displaymodule
+#   GPIO33 = OLED SDA        IO33 links buiten
+#   GPIO14 = OLED SCL        IO14 links buiten
+#   GPIO22 = OT In           D1   rechts binnen  <-- adapter OUT(>)
+#   GPIO21 = OT Out          D2   rechts binnen  --> adapter IN(<)
+#   GPIO17 = 1-wire LOKAAL   D3   rechts binnen  gangsensor
+#   GPIO16 = 1-wire REMOTE   D4   rechts binnen  vloersensoren via UTP;
+#                                  GND en 5V zitten er direct onder
+#
+# OT staat bewust op D1/D2 = GPIO22/21, identiek aan smartcontrol.yaml.
+#
+# Dit bord brengt veel meer naar buiten dan de D0-D8 van de ESP8266-conventie:
+# op de buitenrijen zitten ook GPIO33, 32, 27, 25, 14, 13 en 4 als volwaardige
+# GPIO's. Daardoor hoeft geen enkele toets op A0, en zijn er geen strapping-
+# pinnen in gebruik.
+#
+# Vrij na deze indeling: D8 (GPIO5), A0 (GPIO36), 39, 35, 34, 32, 27, 25, 13, 4.
+# LET OP: A0 is GPIO36, niet GPIO35 zoals de comment in smartcontrol.yaml zegt.
+# GPIO34/35/36/39 zijn input-only ZONDER interne pull-up; GPIO12 nooit gebruiken
+# (strapping voor de flash-voltage), GPIO0/2/5/15 zijn ook strapping-pinnen.
+#
+# Voeding: 5V op de 5V-pin, het bord regelt zelf naar 3,3V. Display, OT-adapter
+# en alle DS18B20's hangen aan die 3,3V.
+#
+# TWEE 1-wire bussen, geen gedeelde bus. De gangsensor is het vangnet voor de
+# kamertemperatuur als WiFi of HA wegvalt; op een gedeelde bus zou een
+# kortgesloten vloersensor of een beschadigde UTP-ader die meting meesleuren.
+# Bijkomend voordeel: de gangsensor is de enige op zijn bus, dus index 0 is per
+# definitie de juiste en zijn ROM-adres is niet nodig. De vloersensoren hebben
+# expliciete adressen (overgenomen uit climate/temp-floor.yaml).
+
+substitutions:
+  device_id: thermostat
+  device_name: Thermostat
+  build_root: !secret build_root
+  friendly_name: ${device_name}
+
+packages:
+  wifi: !include ../wifi.yaml
+  version: !include ../version.yaml
+
+esphome:
+  name: ${device_id}
+  build_path: ${build_root}/${device_id}
+  friendly_name: ${friendly_name}
+  comment: Smart Temperature Control using OpenTherm
+  project:
+    name: 'EcoGrid.SmartTherm Control'
+    version: ${version}
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+external_components:
+  - source:
+      type: local
+      path: ../../components/esphome-climate-control/components
+  - source:
+      type: local
+      path: ../../components/esphome-opentherm/components
+
+logger:
+  level: INFO
+  logs:
+    opentherm: WARN
+
+api:
+  encryption:
+    key: !secret api_key
+  on_client_connected:
+    - globals.set:
+        id: ha_connected
+        value: "true"
+  on_client_disconnected:
+    - globals.set:
+        id: ha_connected
+        value: "false"
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+web_server:
+
+time:
+  - platform: homeassistant
+    id: ha_time
+
+preferences:
+  flash_write_interval: 60s
+
+# -- I2C bus (OLED SSD1315) ---------------------------------------------------
+i2c:
+  sda: GPIO33        # IO33, linker buitenrij
+  scl: GPIO14        # IO14, linker buitenrij
+  frequency: 400kHz
+  id: i2c_bus
+
+# -- One-wire: twee losse bussen (zie kop) ------------------------------------
+one_wire:
+  - platform: gpio
+    pin: GPIO17        # D3 - kastje 1: gangsensor
+    id: onewire_hall
+  - platform: gpio
+    pin: GPIO16        # D4 - kastje 2 via UTP: 4 vloersensoren
+    id: onewire_floor
+
+# -- OpenTherm ----------------------------------------------------------------
+# Adapter: Ihor Melnyk OpenTherm Adapter (ihormelnyk.com/opentherm_adapter).
+# Werkt op 3.3V - "compatible with 5V and 3.3V controllers", VCC naar 3V3.
+#
+# LET OP, DE SIGNAALLIJNEN KRUISEN. Uit de handleiding:
+#   "adapter output pin -> controller input pin,
+#    adapter input pin  -> controller output pin"
+# Dus:
+#   GPIO22 / D1 (in_pin, ESP32 luistert)  <-- adapter OUT(>)
+#   GPIO21 / D2 (out_pin, ESP32 stuurt)   --> adapter IN(<)
+# Recht-op-recht bedraden geeft alleen maar timeouts, zonder duidelijke oorzaak.
+#
+# OT1/OT2 gaan naar de ketel en zijn polariteitsonafhankelijk.
+opentherm:
+  in_pin: GPIO22     # D1  <-- adapter OUT(>)
+  out_pin: GPIO21    # D2  --> adapter IN(<)
+
+# -- Fonts (bpp:1 verplicht: OLED is monochroom) ------------------------------
+font:
+  - file: "gfonts://Roboto"
+    id: font_s
+    size: 10
+    bpp: 1
+    glyphs: " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~°"
+  - file: "gfonts://Roboto@500"
+    id: font_m
+    size: 15
+    bpp: 1
+    glyphs: " 0123456789.-/°naNA%"
+  - file: "gfonts://Roboto@500"
+    id: font_l
+    size: 22
+    bpp: 1
+    glyphs: " 0123456789.-/°na"
+  - file: "../fonts/materialdesignicons-webfont.ttf"
+    id: font_icon
+    size: 12
+    bpp: 1
+    glyphs:
+      - "\U000F05A9"  # mdi:wifi
+      - "\U000F05AA"  # mdi:wifi-off
+      - "\U000F0317"  # mdi:lan-connect  (HA)
+      - "\U000F0318"  # mdi:lan-disconnect (HA off)
+      - "\U000F0003"  # mdi:access-point-network (OT)
+      - "\U000F1212"  # mdi:access-point-network-off (OT off)
+      - "\U000F0238"  # mdi:fire  (heating)
+      - "\U000F0717"  # mdi:snowflake (cooling)
+      - "\U000F15A3"  # mdi:robot-off-outline (system disabled)
+
+# -- Globals ------------------------------------------------------------------
+globals:
+  - id: ha_connected
+    type: bool
+    restore_value: false
+    initial_value: "false"
+  - id: wifi_ok
+    type: bool
+    restore_value: false
+    initial_value: "false"
+  - id: ui_page              # 0 = Home, 1 = Water, 2 = Info
+    type: int
+    restore_value: false
+    initial_value: "0"
+
+wifi:
+  on_connect:
+    - globals.set:
+        id: wifi_ok
+        value: "true"
+  on_disconnect:
+    - globals.set:
+        id: wifi_ok
+        value: "false"
+
+# -- UI: na 30s zonder toetsdruk terug naar pagina Home -----------------------
+script:
+  - id: ui_activity
+    mode: restart
+    then:
+      - delay: 30s
+      - globals.set:
+          id: ui_page
+          value: "0"
+      - component.update: thermostat_display
+
+# -- Display SSD1315 0.96" 128x64 (I2C) ---------------------------------------
+# Paneel is tweekleurig: regel 0..15 geel, 16..63 blauw. Daarom staat de
+# statusbalk (icons + tijd) altijd in de bovenste 16 pixels.
+#
+# Pagina's, te wisselen met toets K4 (*):
+#   0 Home  - kamer / doel groot, buiten + ketelstatus onderaan
+#   1 Water - aanvoer / retour / setpoint
+#   2 Info  - wifi, ip, printtemperatuur, firmwareversie
+display:
+  - platform: ssd1306_i2c
+    model: "SSD1306 128x64"   # SSD1315 is registercompatibel met de SSD1306
+    i2c_id: i2c_bus
+    address: 0x3C
+    id: thermostat_display
+    update_interval: 1s
+    lambda: |-
+      char tmp[32];
+      float v;
+
+      // -- Statusbalk (gele zone) ------------------------------------------
+      it.print( 0, 0, id(font_icon), id(wifi_ok)      ? "\U000F05A9" : "\U000F05AA");
+      it.print(16, 0, id(font_icon), id(ha_connected) ? "\U000F0317" : "\U000F0318");
+      it.print(32, 0, id(font_icon), !id(ot_fault).state ? "\U000F0003" : "\U000F1212");
+      if (id(ha_time).now().is_valid()) {
+        char buf[16];
+        id(ha_time).now().strftime(buf, sizeof(buf), "%H:%M");
+        it.print(127, 1, id(font_s), TextAlign::TOP_RIGHT, buf);
+      }
+      it.horizontal_line(0, 14, 128);
+
+      // -- Pagina 0: Home ---------------------------------------------------
+      if (id(ui_page) == 0) {
+        it.print( 0, 16, id(font_s), "Gang");
+        it.print(70, 16, id(font_s), "Doel");
+
+        v = id(climate_control_component).inside.get();
+        snprintf(tmp, sizeof(tmp), isnan(v) ? "n/a" : "%.1f", v);
+        it.print( 0, 26, id(font_l), tmp);
+
+        snprintf(tmp, sizeof(tmp), "%.1f", id(target_temp_number).state);
+        it.print(70, 26, id(font_l), tmp);
+
+        it.horizontal_line(0, 50, 128);
+
+        v = id(climate_control_component).outside.get();
+        snprintf(tmp, sizeof(tmp), isnan(v) ? "Buiten n/a" : "Buiten %.1f\xC2\xB0", v);
+        it.print(0, 52, id(font_s), tmp);
+
+        if (!id(enable_control).state) {
+          it.print(127, 51, id(font_icon), TextAlign::TOP_RIGHT, "\U000F15A3");
+        } else if (id(ot_flame).state) {
+          v = id(climate_control_component).setpoint.get();
+          snprintf(tmp, sizeof(tmp), isnan(v) ? "n/a" : "%.0f\xC2\xB0", v);
+          it.print(127, 52, id(font_s), TextAlign::TOP_RIGHT, tmp);
+          it.print(112, 51, id(font_icon), TextAlign::TOP_RIGHT, "\U000F0238");
+        } else if (id(ot_cooling_active).state) {
+          it.print(127, 51, id(font_icon), TextAlign::TOP_RIGHT, "\U000F0717");
+        } else {
+          it.print(127, 52, id(font_s), TextAlign::TOP_RIGHT, "gereed");
+        }
+
+      // -- Pagina 1: Water --------------------------------------------------
+      } else if (id(ui_page) == 1) {
+        it.print(0, 17, id(font_s), "Aanvoer");
+        v = id(climate_control_component).inlet.get();
+        snprintf(tmp, sizeof(tmp), isnan(v) ? "n/a" : "%.1f\xC2\xB0", v);
+        it.print(127, 15, id(font_m), TextAlign::TOP_RIGHT, tmp);
+
+        it.print(0, 33, id(font_s), "Retour");
+        v = id(climate_control_component).outlet.get();
+        snprintf(tmp, sizeof(tmp), isnan(v) ? "n/a" : "%.1f\xC2\xB0", v);
+        it.print(127, 31, id(font_m), TextAlign::TOP_RIGHT, tmp);
+
+        it.print(0, 49, id(font_s), "Setpoint");
+        v = id(climate_control_component).setpoint.get();
+        snprintf(tmp, sizeof(tmp), isnan(v) ? "n/a" : "%.1f\xC2\xB0", v);
+        it.print(127, 47, id(font_m), TextAlign::TOP_RIGHT, tmp);
+
+      // -- Pagina 2: Info ---------------------------------------------------
+      } else {
+        it.print(0, 16, id(font_s), "WiFi");
+        v = id(wifi_rssi).state;
+        snprintf(tmp, sizeof(tmp), isnan(v) ? "n/a" : "%.0f dBm", v);
+        it.print(127, 16, id(font_s), TextAlign::TOP_RIGHT, tmp);
+
+        it.print(0, 27, id(font_s), "IP");
+        it.print(127, 27, id(font_s), TextAlign::TOP_RIGHT,
+                 id(wifi_ip).state.c_str());
+
+        it.print(0, 38, id(font_s), "Ta vloer");
+        v = id(ds18_floor_supply).state;
+        snprintf(tmp, sizeof(tmp), isnan(v) ? "n/a" : "%.1f\xC2\xB0", v);
+        it.print(127, 38, id(font_s), TextAlign::TOP_RIGHT, tmp);
+
+        it.print(0, 49, id(font_s), "Versie");
+        it.print(127, 49, id(font_s), TextAlign::TOP_RIGHT, "${version}");
+      }
+
+# -- Toetsen K1..K4 op de displaymodule ---------------------------------------
+# Schakelen naar GND, module heeft zelf 4.7k pull-ups -> INPUT_PULLUP + inverted.
+# Staat de silkscreen-volgorde bij jou anders, wissel dan alleen de pinnummers.
+binary_sensor:
+  - platform: gpio
+    id: key_up
+    internal: true
+    name: Key Up
+    pin:
+      number: GPIO26        # D0 - K1 (^)
+      mode:
+        input: true
+        pullup: true
+      inverted: true
+    filters:
+      - delayed_on: 20ms
+      - delayed_off: 20ms
+    on_press:
+      - script.execute: ui_activity
+      - while:
+          condition:
+            binary_sensor.is_on: key_up
+          then:
+            - lambda: |-
+                float t = id(target_temp_number).state + 0.5f;
+                if (t > 25.0f) t = 25.0f;
+                auto call = id(target_temp_number).make_call();
+                call.set_value(t);
+                call.perform();
+                id(ui_page) = 0;
+            - component.update: thermostat_display
+            - delay: 400ms
+
+  - platform: gpio
+    id: key_down
+    internal: true
+    name: Key Down
+    pin:
+      number: GPIO18        # D5 - K2 (v)
+      mode:
+        input: true
+        pullup: true
+      inverted: true
+    filters:
+      - delayed_on: 20ms
+      - delayed_off: 20ms
+    on_press:
+      - script.execute: ui_activity
+      - while:
+          condition:
+            binary_sensor.is_on: key_down
+          then:
+            - lambda: |-
+                float t = id(target_temp_number).state - 0.5f;
+                if (t < 18.0f) t = 18.0f;
+                auto call = id(target_temp_number).make_call();
+                call.set_value(t);
+                call.perform();
+                id(ui_page) = 0;
+            - component.update: thermostat_display
+            - delay: 400ms
+
+  - platform: gpio
+    id: key_hash
+    internal: true
+    name: Key Hash
+    pin:
+      number: GPIO19        # D6 - K3 (#) - regeling aan/uit
+      mode:
+        input: true
+        pullup: true
+      inverted: true
+    filters:
+      - delayed_on: 20ms
+      - delayed_off: 20ms
+    on_press:
+      - script.execute: ui_activity
+      - switch.toggle: enable_control
+      - globals.set:
+          id: ui_page
+          value: "0"
+      - component.update: thermostat_display
+
+  - platform: gpio
+    id: key_star
+    internal: true
+    name: Key Star
+    pin:
+      number: GPIO23        # D7 - K4 (*) - volgende pagina
+      mode:
+        input: true
+        pullup: true
+      inverted: true
+    filters:
+      - delayed_on: 20ms
+      - delayed_off: 20ms
+    on_press:
+      - script.execute: ui_activity
+      - lambda: id(ui_page) = (id(ui_page) + 1) % 3;
+      - component.update: thermostat_display
+
+  - platform: opentherm
+    fault_indication:
+      name: Fault
+      id: ot_fault
+      device_class: problem
+      icon: mdi:alert-circle
+    ch_active:
+      name: CH mode
+      id: ot_ch_active
+      device_class: heat
+    dhw_active:
+      name: DHW mode
+      id: ot_dhw_active
+      device_class: running
+    flame_on:
+      name: Flame
+      id: ot_flame
+      device_class: heat
+    cooling_active:
+      name: Cooling
+      id: ot_cooling_active
+      device_class: cold
+      icon: mdi:snowflake
+
+# -- Sensors ------------------------------------------------------------------
+sensor:
+  # -- Gang: enige sensor op de lokale bus, dus index 0 is altijd de juiste ----
+  - platform: dallas_temp
+    one_wire_id: onewire_hall
+    index: 0
+    name: Hall Temperature Raw
+    id: ds18_hall
+    internal: true
+    update_interval: 10s
+    filters:
+      - offset: -1.3
+
+  # -- Vloerverwarming: 4 sensoren in kastje 2, via UTP op de remote bus -------
+  # Adressen overgenomen uit climate/temp-floor.yaml. Expliciete adressen i.p.v.
+  # index, zodat een uitvallende of vervangen sensor de rest niet verschuift.
+  - platform: dallas_temp
+    one_wire_id: onewire_floor
+    address: 0xd23cd40457914c28
+    name: Ta Verdeler (Red)
+    id: ds18_floor_supply
+    icon: mdi:heating-coil
+    update_interval: 10s
+
+  - platform: dallas_temp
+    one_wire_id: onewire_floor
+    address: 0x323c34045709be28
+    name: Tr Eetkamer (White)
+    id: ds18_floor_eetkamer
+    icon: mdi:thermometer-chevron-up
+    update_interval: 10s
+
+  - platform: dallas_temp
+    one_wire_id: onewire_floor
+    address: 0x963cdf04572d8528
+    name: Tr Keuken (Blue)
+    id: ds18_floor_keuken
+    icon: mdi:thermometer-chevron-up
+    update_interval: 10s
+
+  - platform: dallas_temp
+    one_wire_id: onewire_floor
+    address: 0xa43c130457bc1528
+    name: Tr Woonkamer (Yellow)
+    id: ds18_floor_woonkamer
+    icon: mdi:thermometer-chevron-up
+    update_interval: 10s
+
+  - platform: wifi_signal
+    name: WiFi Signal
+    id: wifi_rssi
+    icon: mdi:wifi
+    update_interval: 60s
+
+  - platform: opentherm
+    t_outside:
+      name: OT Outside Raw
+      id: ot_outside
+      internal: true
+    t_ret:
+      name: OT Return Raw
+      id: ot_return
+      internal: true
+    t_boiler:
+      name: OT Boiler Raw
+      id: ot_boiler
+      internal: true
+
+  - platform: climate_control
+    setpoint:
+      name: setpoint
+      trend:
+        name: setpoint trend
+    inside:
+      name: inside
+      trend:
+        name: inside trend
+    outside:
+      name: outside
+      trend:
+        name: outside trend
+    inlet:
+      name: inlet
+    outlet:
+      name: outlet
+    factor:
+      name: factor
+
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      name: IP Address
+      id: wifi_ip
+
+button:
+  - platform: restart
+    name: "Restart"
+    id: btn_restart
+
+# -- Schakelaars --------------------------------------------------------------
+switch:
+  - platform: template
+    name: Enable Control
+    id: enable_control
+    icon: mdi:power
+    restore_mode: RESTORE_DEFAULT_ON
+    optimistic: true
+
+  - platform: opentherm
+    ch_enable:
+      name: Enable CH
+      id: ot_ch_enable
+      restore_mode: DISABLED
+    dhw_enable:
+      name: Enable DHW
+      id: ot_dhw_enable
+      internal: true
+      restore_mode: ALWAYS_OFF
+    cooling_enable:
+      name: Enable Cooling
+      id: ot_cooling_enable
+      restore_mode: DISABLED
+    otc_active:
+      name: Enable OTC
+      id: ot_otc_enable
+      internal: true
+      restore_mode: ALWAYS_ON
+
+# -- OpenTherm setpoint output ------------------------------------------------
+output:
+  - platform: opentherm
+    t_set:
+      id: ot_t_set_output
+      min_value: 0
+      max_value: 100
+      zero_means_zero: true
+    t_room:
+      id: ot_t_room_output
+      min_value: 0
+      max_value: 100
+    t_room_set:
+      id: ot_t_room_set_output
+      min_value: 0
+      max_value: 100
+
+# -- Instelbare parameters ----------------------------------------------------
+number:
+  - platform: template
+    name: Target
+    id: target_temp_number
+    min_value: 18.0
+    max_value: 25.0
+    step: 0.1
+    restore_value: true
+    optimistic: true
+    mode: box
+    initial_value: 21.0
+    unit_of_measurement: "°C"
+    device_class: temperature
+
+  - platform: template
+    name: factor_outside
+    id: factor_a_number
+    min_value: 0.0
+    max_value: 1.0
+    step: 0.05
+    restore_value: true
+    optimistic: true
+    mode: box
+    initial_value: 0.65
+
+  - platform: template
+    name: factor_inside
+    id: factor_b_number
+    min_value: 0.0
+    max_value: 1.0
+    step: 0.05
+    restore_value: true
+    optimistic: true
+    mode: box
+    initial_value: 0.2
+
+  - platform: template
+    name: factor_curve
+    id: factor_c_number
+    min_value: 0.0
+    max_value: 1.0
+    step: 0.05
+    restore_value: true
+    optimistic: true
+    mode: box
+    initial_value: 0.0
+
+# -- Climate control regelcomponent -------------------------------------------
+climate_control:
+  id: climate_control_component
+  enable_switch: enable_control       # main on/off switch
+  room_sensor: ds18_hall              # gangsensor (lokale 1-wire bus)
+  outside_sensor: ot_outside          # input sensor for outside temperature
+  inlet_sensor: ot_return             # input sensor for inlet temperature
+  outlet_sensor: ot_boiler            # input sensor for outlet temperature
+  target_number: target_temp_number   # input number for target temperature
+  factor_a_number: factor_a_number    # input number for outside factor
+  factor_b_number: factor_b_number    # input number for inside factor
+  factor_c_number: factor_c_number    # input number for curve factor
+  anti_short_cycle: 30min             # minimum time between switching on/off
+  ch_switch: ot_ch_enable             # output switch to enable/disable heating
+  cooling_switch: ot_cooling_enable   # output switch to enable/disable cooling
+  setpoint_output: ot_t_set_output    # output for setpoint
+  room_output: ot_t_room_output       # output for room temperature
+  room_setpoint_output: ot_t_room_set_output  # output for room setpoint
