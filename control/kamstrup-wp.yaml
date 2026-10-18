@@ -59,7 +59,7 @@ web_server:
     version: 3
 
 external_components:
-  - source: C:/Users/erikv/OneDrive/Archive/Erik/Hobby/ESPHome/components/esphome-kamstrup/components
+  - source: github://Pluimvee/esphome-kamstrup
     components: [ kamstrup ]
     refresh: 1min
 
@@ -287,30 +287,38 @@ script:
           float flow_target = id(flow_target_auto);
           if (id(auto_pump).state) 
           {
-            const float FLOW_MIN  = 900.0f;   // minimum flow target upto 3kW
-            const float FLOW_LOW  = 1075.0f;  // low band upto 4kW
-            const float FLOW_MID  = 1225.0f;  // mid band upto 5kW
-            const float FLOW_HIGH = 1375.0f;  // high band upto 6kW
-            const float FLOW_MAX  = 1450.0f;  // max band above 6kW and defrosts
+            // Flow bands are fixed (chosen on pump resonance noise), only the switch points follow from deltaT
+            const float FLOW_MIN  = 900.0f;   // minimum flow target upto 4.2kW
+            const float FLOW_LOW  = 1075.0f;  // low band upto 5.0kW
+            const float FLOW_MID  = 1225.0f;  // mid band upto 5.7kW
+            const float FLOW_HIGH = 1375.0f;  // high band upto 6.4kW
+            const float FLOW_MAX  = 1450.0f;  // max band above 6.4kW
+
+            // Switch points from deltaT = P / (1.163 * q)  [W, l/h]
+            // up:   when deltaT in the current band would exceed DT_MAX
+            // down: when deltaT in the lower band would be <= DT_DOWN
+            const float DT_MAX  = 4.0f;       // K (near the flow at which heating curve factor 0.65 was set)
+            const float DT_DOWN = 3.2f;       // K (WP minimum is 2.8-3.3kW, must be able to drop back to 900)
+            auto p_at = [](float dt, float q) { return dt * 1.163f * q; };
 
             // Step up/down with hysteresis per band (current band chosen by existing target)
             if (flow_target <= FLOW_MIN) {
-              if (pwr > 3000.0f) flow_target = FLOW_LOW;
-            } 
+              if (pwr > p_at(DT_MAX, FLOW_MIN)) flow_target = FLOW_LOW;                 // 4.2kW
+            }
             else if (flow_target <= FLOW_LOW) {
-              if (pwr < 2700.0f) flow_target = FLOW_MIN;
-              else if (pwr > 4000.0f) flow_target = FLOW_MID;
-            } 
+              if (pwr < p_at(DT_DOWN, FLOW_MIN)) flow_target = FLOW_MIN;                // 3.35kW
+              else if (pwr > p_at(DT_MAX, FLOW_LOW)) flow_target = FLOW_MID;            // 5.0kW
+            }
             else if (flow_target <= FLOW_MID) {
-              if (pwr < 3700.0f) flow_target = FLOW_LOW;
-              else if (pwr > 5000.0f) flow_target = FLOW_HIGH;
-            } 
+              if (pwr < p_at(DT_DOWN, FLOW_LOW)) flow_target = FLOW_LOW;                // 4.0kW
+              else if (pwr > p_at(DT_MAX, FLOW_MID)) flow_target = FLOW_HIGH;           // 5.7kW
+            }
             else if (flow_target <= FLOW_HIGH) {
-              if (pwr < 4700.0f) flow_target = FLOW_MID;
-              else if (pwr > 6000.0f) flow_target = FLOW_MAX;
-            } 
+              if (pwr < p_at(DT_DOWN, FLOW_MID)) flow_target = FLOW_MID;                // 4.55kW
+              else if (pwr > p_at(DT_MAX, FLOW_HIGH)) flow_target = FLOW_MAX;           // 6.4kW
+            }
             else {  // FLOW_MAX band
-              if (pwr < 5700.0f) flow_target = FLOW_HIGH;
+              if (pwr < p_at(DT_DOWN, FLOW_HIGH)) flow_target = FLOW_HIGH;              // 5.1kW
             }
             if (id(flow_target_manual).state != flow_target)    // set slider in HA
               id(flow_target_manual).publish_state(flow_target);
