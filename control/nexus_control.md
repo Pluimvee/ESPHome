@@ -46,17 +46,33 @@ Setpoint in register 43133: `sp = -(int16_t)(tgt_w / 10)` (huis → Solis conven
 
 ### Read registers (function code 0x04)
 
-Gelezen als één FC04-request over het blok 33135–33152 (bridge-register 33143 sluit de gap, intern, geen HA-entiteit).
+Gelezen als één FC04-request over het blok 33135–33152.
+
+> **Range-opbouw (ESPHome 2026.8)**: de modbus_controller voegt sensoren alleen samen tot één
+> request als hun registers **exact aansluiten** — elk gat, hoe klein ook, geeft een eigen request.
+> Het vroegere bridge-register 33143 loste dat niet op: het blok viel uiteen in vier requests
+> (33135, 33139, 33143, 33147–33152) en de fasestromen in drie. De bus raakte daardoor verzadigd
+> en `grid_metric_samples` haalde ~245 per kwartier i.p.v. ~450. Nu overbrugt `register_count` op
+> de sensor vóór een gat de tussenliggende registers (33135: 4, 33139: 10, 33252/33254: 2, 33161: 4).
 
 | Register | Type | Eenheid | Naam | Noot |
 |---|---|---|---|---|
-| 33135 | U16 | — | Battery current direction | `0`=charge, `1`=discharge — autoritatieve richting voor 33149 (zie hierboven) |
-| 33139 | U16 | 1% | Battery SOC | 0–100%; `on_value` her-ankert de coulomb-counting bij een echte wijziging |
-| 33143 | U16 | — | Bridge register | Dummy, sluit gap zodat 33135–33152 één FC04-request is |
-| 33147 | U16 | 1W | House load power | Totaal, altijd positief |
+| 33135 | U16 | — | Battery current direction | `0`=charge, `1`=discharge — autoritatieve richting voor 33149 (zie hierboven); `register_count: 4` |
+| 33139 | U16 | 1% | Battery SOC | 0–100%; `on_value` her-ankert de coulomb-counting bij een echte wijziging; `register_count: 10` (t/m 33148) |
+| 33147 | U16 | 1W | House load power | **Niet gebruikt** — U16, blijft op 0 bij PV-overschot (Omnik). Vervangen door `residual_power` |
 | 33149 | S32 | 1W | Battery power | Alleen betrouwbaar als **magnitude** (2 registers); richting via 33135 |
 | 33151 | S32 | 1W | Inverter AC Grid Port Power | + = export, − = import (2 registers) |
-| 33263 | S32 | 1W | Meter total active power | Na `multiply:-1`: + = import, − = export (2 registers); intern 1Hz-gelezen |
+| 33263 | S32 | 1W | Meter total active power | Na `multiply:-1`: + = import, − = export (2 registers); `skip_updates: 1` (elke 2s, zie [Schrijftiming](#schrijftiming--modbus-protocol)) |
+
+Apart FC04-request per blok, elke 60s (`skip_updates: 59`), voor `residual_energy` — zie
+[Residual power en energie](#residual-power-en-energie):
+
+| Register | Type | Eenheid | Naam | Noot |
+|---|---|---|---|---|
+| 33161 | U32 | 0.01kWh | Total battery charge energy | Solis-teller; `register_count: 4` sluit aan op 33165 |
+| 33165 | U32 | 0.01kWh | Total battery discharge energy | Solis-teller |
+| 33283 | U32 | 0.01kWh | Meter total active energy from grid | SDM630-teller via de Solis |
+| 33285 | U32 | 0.01kWh | Meter total active energy to grid | idem |
 
 Apart FC04-request (buiten bovenstaand blok, span 5, geen bridge nodig) voor de netstroom per fase — zie
 [Netstroom per fase](#netstroom-per-fase-grid_current_ab_c):
@@ -115,17 +131,20 @@ Wordt als vaste waarde **33** geschreven (geen read-modify-write):
 |---|---|---|
 | `select.control_mode` | select | Mode: hold / level / charge / discharge, `optimistic`, `restore_value` |
 | `number.target_grid_power` | number | Doelvermogen in W (huis-conv), −10000…10000, stap 100 |
-| `number.target_soc` | number | Doel-SOC in %, 7…100, stap 1, default 80 — alleen relevant in charge/discharge |
+| `number.target_soc` | number | Doel-SOC in %, 7…100, stap 0,1 (EMS rekent met 1 decimaal), default 80 — alleen relevant in charge/discharge |
 | `sensor.battery_capacity` | sensor | Accucapaciteit in kWh — **vaste** waarde (20.48) uit `substitutions`, alleen gepubliceerd ter inzage; geen HA-input meer, zie [Energieboekhouding](#energieboekhouding--capaciteit-baseremainingusabletarget_usable) |
 | `sensor.battery_soc` | sensor | SOC %, ruwe BMS-waarde (1%-resolutie, onregelmatige update) |
-| `sensor.battery_soc_hires` | sensor | Hoger-resolutie SOC-schatting (2 decimalen, 10s), lopend geklemd op ±0,9pp t.o.v. de laatste echte BMS-waarde; telling staat uit bij SOC ≥ 99 en ≤ 7, zie [Hoge-resolutie SOC](#hoge-resolutie-soc--coulomb-counting-tussen-bms-updates) |
+| `sensor.battery_soc_hires` | sensor | Hoger-resolutie SOC-schatting (2 decimalen, 10s): volgt BMS + offset binnen ±0,9pp, telt vrij tijdens een BMS-stilstand; telling staat uit bij SOC 100 en ≤ 7 (daartussen max 99,9), zie [Hoge-resolutie SOC](#hoge-resolutie-soc--coulomb-counting-tussen-bms-updates) |
+| `sensor.battery_soc_offset` | sensor | Geschat verschil echte SOC − BMS in pp; ≠ 0 alleen na een BMS-stilstand, overleeft een herstart |
+| `binary_sensor.bms_stalled` | binary | Aan tijdens een BMS-stilstand (> 1,5pp energie sinds de laatste BMS-stap) |
 | `sensor.base_energy` | sensor | Energie onder de overdischarge-ondergrens (kWh), niet bruikbaar — zie [Energieboekhouding](#energieboekhouding--capaciteit-baseremainingusabletarget_usable) |
 | `sensor.remaining_energy` | sensor | Totale accu-inhoud in kWh, afgeleid van `battery_soc_hires` — zie [Energieboekhouding](#energieboekhouding--capaciteit-baseremainingusabletarget_usable) |
 | `sensor.usable_energy` | sensor | `remaining_energy − base_energy` (kWh) — zie [Energieboekhouding](#energieboekhouding--capaciteit-baseremainingusabletarget_usable) |
 | `sensor.target_usable_energy` | sensor | `target_soc` uitgedrukt in kWh boven de ondergrens; observationeel, nog niet in `apply_mode` verwerkt — zie [Energieboekhouding](#energieboekhouding--capaciteit-baseremainingusabletarget_usable) |
 | `sensor.grid_power` | sensor | Netmeter W (huis-conv: + = import), 5s, HA-visible |
 | `sensor.inverter_power` | sensor | AC grid port W (Solis-conv: + = export) |
-| `sensor.house_load` | sensor | Huislast W |
+| `sensor.residual_power` | sensor | Huislast minus Omnik-PV (W), = grid − accu-AC-poort; negatief bij PV-overschot, 5s — zie [Residual power en energie](#residual-power-en-energie) |
+| `sensor.residual_energy` | sensor | Tweezijdige teller (kWh, `state_class: total`) bij `residual_power`, 60s |
 | `sensor.grid_current_a/b/c` | sensor | Netstroom per fase (A), 0.01A-resolutie, ~10s, zie [Netstroom per fase](#netstroom-per-fase-grid_current_ab_c) |
 | `text_sensor.inverter_status` | text | `charging` / `discharging` / `standby`, afgeleid van `inverter_power` (drempel ±150W) |
 | `text_sensor.grid_status` | text | `import` / `export` / `level`, afgeleid van `grid_power` (drempel ±50W) |
@@ -145,198 +164,112 @@ Enige echte uitzondering: ander Solis-mechanisme (Force Charge i.p.v. RC Grid Ad
 ### level / charge / discharge
 Gedeeld mechanisme via RC Grid Adjustment (43132/43133) — er is **geen** apart Force Charge/Discharge-pad voor `charge`/`discharge`. `43135`/`43136` worden hier nooit geschreven.
 
-- `level`: `adjusted_w = target_grid_w` (geen extra-term)
-- `charge`: `adjusted_w = target_grid_w + extra_w` (meer import toegestaan om te laden) — `extra_w` volgt uit de SOC-deadline-sturing hieronder
-- `discharge`: `adjusted_w = target_grid_w − extra_w` (meer export toegestaan om te ontladen)
+- `level`: `adjusted_w = target_grid_w`
+- `charge` / `discharge`: `adjusted_w` volgt uit de SOC-deadline-sturing hieronder (huislast-term + benodigd accuvermogen)
 
 Vervolgens, voor alle drie de modes identiek:
 
 1. **43133 wordt altijd geschreven**: `sp = -(adjusted_w / 10)` (huis → Solis conventie), ongeacht de grootte van `adjusted_w`. Dit kost niets en geeft direct effect zolang RC nog actief is.
-2. **43132 wordt alleen herbevestigd (→1) als `|adjusted_w| > RC_THRESHOLD_W`** (100W). Onder die drempel schrijven we 43132 niet — de Solis' eigen RC-timeout (43282) laat 'm dan vanzelf verlopen naar self-use, zonder dat de firmware zelf hoeft te bepalen wanneer een waarde "stabiel genoeg" is. Dit vervangt de oude aparte `target_grid=0`-speciale-geval-logica in `level`: hetzelfde drempelmechanisme dekt dat geval nu vanzelf mee.
+2. **43132 wordt alleen herbevestigd (→1) als `|adjusted_w| > RC_THRESHOLD_W`** (100W). Onder die drempel schrijven we 43132 niet — de Solis' eigen RC-timeout (43282) laat 'm dan vanzelf verlopen naar self-use, zonder dat de firmware zelf hoeft te bepalen wanneer een waarde "stabiel genoeg" is.
 
-Als `soc` geen geldige waarde heeft (< 0.5%) of het SOC-doel gehaald is (het anker is dan naar `target_soc` geratelde, dus `soc_gap` en `erosion_pct` beide 0), vervalt `extra_w` en wordt gewoon `sp = -(target_grid_w / 10)` geschreven — functioneel identiek aan `level`. `soc` is hier de hoger-resolutie schatting uit `battery_soc_hires`, met fallback naar de ruwe `battery_soc` zolang er nog geen anchor is geweest — zie [Hoge-resolutie SOC](#hoge-resolutie-soc--coulomb-counting-tussen-bms-updates).
+`soc` is de hoger-resolutie schatting uit `battery_soc_hires`, met fallback naar de ruwe `battery_soc` zolang hires nog NAN is — zie [Hoge-resolutie SOC](#hoge-resolutie-soc--coulomb-counting-tussen-bms-updates). Zonder geldige `soc` (< 0.5%) geldt `adjusted_w = target_grid_w`.
 
-> **RC-timeout als hardware-native fallback**: in plaats van software die expliciet beslist wanneer RC Grid Adjustment "uit" moet (met het risico op flapping zonder handmatige hysterese), laat dit ontwerp de Solis' eigen RC-timeout (43282, nu 2 minuten) het werk doen — de firmware hoeft alleen actief te *herbevestigen* zolang er een betekenisvolle aanvraag is, en anders niets te doen. Dit wordt momenteel empirisch getest door `rc_grid_adj_reg` (43132) tijdelijk zichtbaar te maken in HA (zie entiteitentabel) en te observeren of hij vanzelf naar 0 zakt.
+> **RC-timeout als hardware-native fallback**: in plaats van software die expliciet beslist wanneer RC Grid Adjustment "uit" moet (met het risico op flapping zonder handmatige hysterese), laat dit ontwerp de Solis' eigen RC-timeout (43282, nu 2 minuten) het werk doen — de firmware hoeft alleen actief te *herbevestigen* zolang er een betekenisvolle aanvraag is, en anders niets te doen.
 
 ---
 
 ## SOC-deadline sturing (charge / discharge)
 
-Geen klassieke PI-regelaar op de gemeten grid-power, maar een **energie-budget over een aftellende deadline**, met een **PV-marge** die de sturing tijdelijk terughoudt zolang PV het gat mogelijk gratis kan dichten:
+**Opdracht**: `target_soc` halen vóór het eerstvolgende hele uur, met de waarden van nu. De firmware
+voorspelt geen PV en bouwt geen buffer in: verwachte PV en reserve(kwartieren) zijn aan het EMS, dat
+`target_soc` zo vaak kan bijstellen als het wil (sinds 18-10-2026, zie [Geschiedenis](#geschiedenis-pv-marge-en-anker-tot-18-10-2026)).
 
 ```
-BATTERY_WH      = 20480    # accucapaciteit, uit substitutions.battery_capacity_kwh
-MAX_GRID_W      = 10000    # plafond op |target_grid_w + extra_w| (de totale grid-aanvraag)
-RATE_FLOOR_MS   = 120000   # 2 min: ondergrens op de deler in de extra_w-rekensom
-MARGIN_LEAD_MS  = 300000   # 5 min: PV-marge is hier al 0, vóór de rate-vloer intreedt
-PV_BUDGET_WH    = 2000     # aanname: max 2 kWh "gratis" PV-bijdrage binnen het venster
-PV_RATE_W       = 2000     # aangenomen gemiddeld PV-surplusvermogen
+BATTERY_WH    = 20480     # substitutions.battery_capacity_kwh
+MAX_GRID_W    = 10000     # |setpoint|: meer neemt de Solis via 43133 niet aan
+I_LIM_A       = 25        # hoofdzekering per fase
+W_PER_A       = 690       # 3 x 230V: 1W setpoint = 1/690 A extra op elke fase
+RATE_FLOOR_MS = 120000    # ondergrens op de deler (2 min)
 
-anchor_soc = (g_soc_window_anchor is geldig) ? g_soc_window_anchor : soc   # zie hieronder
-anchor_soc = max(anchor_soc, soc)               # charge     — ratel: schuift alleen omhoog mee
-anchor_soc = min(anchor_soc, soc)               # discharge  — ratel: schuift alleen omlaag mee
-anchor_soc = min(anchor_soc, target_soc)        # charge     — klem: nooit voorbij het doel
-anchor_soc = max(anchor_soc, target_soc)        # discharge
-g_soc_window_anchor = anchor_soc                # terugschrijven, anders geen ratel
-
-soc_gap     = max(0, target_soc − anchor_soc)   # charge     — wat er nog te gaan is
-soc_gap     = max(0, anchor_soc − target_soc)   # discharge
-erosion_pct = max(0, anchor_soc − soc)          # charge     — terugval sinds venster-start
-erosion_pct = max(0, soc − anchor_soc)          # discharge
-# (soc_gap/erosion_pct blijven 0 als soc ongeldig is, want soc dan op -1 gezet)
-# soc = battery_soc_hires (coulomb-counted, zie eigen sectie), fallback naar ruwe battery_soc
-
-if soc_gap <= 0 and erosion_pct <= 0:
-    sp = -(target_grid_w / 10)                              # neutraal, doel al gehaald, geen terugval
+not_past_target = soc <= target_soc      # charge   (discharge: soc >= target_soc)
+if soc geldig and not_past_target:
+    need_pct  = target_soc − soc         # charge   (discharge: soc − target_soc); 0 op het doel
+    remaining = max(deadline, now + RATE_FLOOR_MS) − now
+    R         = need_pct/100 · BATTERY_WH / remaining          # benodigd accuvermogen
+    want      = residual_power + R       # charge   (discharge: residual_power − R)
+    cap       = +MAX_GRID_W              # charge   (discharge: −MAX_GRID_W)
+    i_max     = max(Ia, Ib, Ic)
+    phase_cap = grid_nu + 690·(25 − i_max)                     # charge   (discharge: grid_nu − …)
+    cap       = min(cap, phase_cap)      # charge   (discharge: max)
+    adjusted  = max(tgt_w, min(want, cap))                     # charge
+    adjusted  = min(tgt_w, max(want, cap))                     # discharge
 else:
-    margin_deadline_ms   = max(target_soc_deadline_ms, now_ms + MARGIN_LEAD_MS)
-    margin_effective_h   = (margin_deadline_ms − now_ms) / 3600000 − MARGIN_LEAD_MS / 3600000
-    margin_wh            = min(PV_BUDGET_WH, PV_RATE_W * margin_effective_h)
-    margin_pct           = margin_wh / BATTERY_WH * 100
-    if mode != "charge": margin_pct = 0                     # PV-marge geldt ALLEEN bij laden
-    need_pct             = erosion_pct + max(0, soc_gap − margin_pct)   # marge kort NOOIT op erosion_pct
-
-    if need_pct <= 0:
-        sp = -(target_grid_w / 10)                          # PV-marge dekt het gat, geen duw nodig
-    else:
-        rate_deadline_ms = max(target_soc_deadline_ms, now_ms + RATE_FLOOR_MS)
-        remaining_h      = (rate_deadline_ms − now_ms) / 3600000
-        extra_w_max      = MAX_GRID_W − target_grid_w        # charge
-        extra_w_max      = MAX_GRID_W + target_grid_w        # discharge
-        extra_w          = min(need_pct / 100 * BATTERY_WH / remaining_h, max(0, extra_w_max))
-        adjusted_w       = target_grid_w + extra_w           # charge
-        adjusted_w       = target_grid_w − extra_w           # discharge
-        sp = -(adjusted_w / 10)
-
-write_register(43133, sp)
+    adjusted  = tgt_w
 ```
 
-Uitgevoerd elke **30s** via `interval`, en direct bij mode-/target-wijziging — beide via hetzelfde `apply_mode`-script (zie [Modi](#modi)).
+- **Huislast-term** (`residual_power`, zie [Residual power en energie](#residual-power-en-energie)):
+  de Solis leest 43133 als totale netafname, dus zonder deze term ging huislast (EV-lader, WP) van het
+  laden af. Binnen een ronde van 30s houdt de Solis het net op het setpoint: extra PV gaat naar de accu
+  (**geen export** tijdens charge), extra huislast wordt de volgende ronde meegenomen. `residual` bevat
+  de accu niet, dus er is geen terugkoppeling op zichzelf. Ontbreekt `residual_power` (NAN), dan telt
+  hij als 0.
+- **PV telt alleen mee zoals hij er nu is** (via `residual`). Bij PV-overschot groter dan R wordt
+  `want` < `tgt_w` en blijft het setpoint `tgt_w`: de accu neemt al het overschot op.
+- **Op het doel vasthouden** (`need_pct` = 0, dus R = 0): `adjusted = max(tgt_w, residual)` — de accu
+  staat stil, het net levert huislast en EV. Dit is ook de modus tijdens een charge_deadline (charge
+  met `target_soc` = huidige SOC). Bij PV-overschot laadt de accu dat overschot.
+- **SOC voorbij het doel** (bv. 07-09: charge naar 17% vanaf 54%): geen huislast-term, `adjusted =
+  tgt_w` — de accu levert aan het huis tot het doel, en wordt daar vastgehouden.
+- **Fasegrens**: de Solis verdeelt symmetrisch, dus de ruimte op de zwaarste fase (garagegroep: EV-lader
+  + WP) bepaalt hoeveel netvermogen er nog bij mag. De meter levert stroom zonder richting; een fase die
+  teruglevert maakt de schatting alleen voorzichtiger. Fasestroom ververst ~11s, de som draait elke 30s —
+  een overschrijding duurt hooguit één ronde. De grenzen duwen het setpoint nooit voorbij `tgt_w` terug.
+- **Log**: `charge tgt=… R=… res=… adj=… sp=… soc=…/… imax=…A cap=…W rc=…` (imax/cap NAN zonder
+  fasestroom, R/res 0/NAN voorbij het doel).
 
-> **`MAX_GRID_W` is geen omvormer-vermogensgrens**: 43133 is een target voor de gemeten grid-flow, niet voor het omvormervermogen zelf — de Solis probeert dat setpoint te halen door batterijvermogen bij te schakelen (`grid = huislast − PV + batterijvermogen`), en dát batterijvermogen is wat door het omvormer-vermogen begrensd wordt. Een aanvraag van 15kW bleek in de praktijk niet gehaald te worden; `MAX_GRID_W = 10000` is een pragmatische, vaste bovengrens (geen theoretisch afgeleide waarde).
->
-> **TODO — vaste `MAX_GRID_W` per fase**: de omvormer stuurt symmetrisch over de 3 fases, dus bij een asymmetrische huislast (bv. een EV-lader op één fase) kan een enkele fase al over de 25A-grens gaan ruim vóór `MAX_GRID_W` in totaal bereikt is. De benodigde stroom-per-fase is inmiddels wél uitgelezen (`grid_current_a/b/c`, zie [Netstroom per fase](#netstroom-per-fase-grid_current_ab_c)) — alleen de koppeling naar een dynamische, per-fase-bewuste `MAX_GRID_W` in `apply_mode` ontbreekt nog.
+### Simulatie (18-10-2026)
 
-De vroegere TODO over SOC-resolutie is opgelost: zie [Hoge-resolutie SOC](#hoge-resolutie-soc--coulomb-counting-tussen-bms-updates).
+Port van oude en nieuwe rekensom, 30s-stappen, residual uit de 5-minutengemiddelden in HA, accu tot
+9,7 kW en boven 89% afgeknepen zoals op 10-10 gemeten (5,5 kW bij ~90,5%, 4,5 kW bij ~92,6%):
 
-### Erosion-bescherming: nooit onder het venster-startpunt terugzakken
+| Casus | Oud | Nieuw | Vol vermogen |
+|---|---|---|---|
+| 10-10 14-15, 56,8 → 99 | 93,9 | 94,5 | 95,4 |
+| 13-10 14-15, 53 → 84 | 83,5 | 83,5 | 84,8 |
+| 17-10 14-15, → 94 | 93,2 | 93,4 | — |
 
-**Aanleiding (06-09-2026)**: bij `mode=charge`, `soc=47%`, `target_soc=49%` en nog 24 minuten tot de
-eerstvolgende klok-uur-deadline, was de PV-marge (~3pp) groter dan de gap (2pp) → `need_pct=0` →
-`adjusted_w = target_grid_w` (doorgaans 0: "laad alleen op PV-surplus"). Met `|adjusted_w| ≤
-RC_THRESHOLD_W` herbevestigt `apply_mode` 43132 niet, dus de Solis valt terug op self-use. Zowel via een
-RC-setpoint van 0 als via self-use geldt dezelfde natuurkunde: als huislast > PV, is de **enige** manier om
-de meter op 0 te houden dat de batterij het verschil bijlegt — dus ontladen. Precies het tegenovergestelde
-van wat `charge`-mode zou moeten doen terwijl hij op zijn PV-kans wacht.
-
-De kern: `target_grid=0` is een *symmetrisch* doel (geen import, geen export), maar de bedoeling van de
-PV-wachtfase is impliciet *asymmetrisch* — laad graag op PV-surplus, ontlaad nooit. Die twee vallen alleen
-samen zolang PV ≥ load.
-
-**Oplossing**: `g_soc_window_anchor` — een snapshot van `soc` op hetzelfde arm-moment als
-`target_soc_deadline_ms` (dus gezet in `arm_soc_deadline`, bij elke mode- of target_soc-wijziging en bij
-opstarten). `apply_mode` splitst de gap vervolgens in twee delen met elk hun eigen behandeling:
-
-- **`soc_gap`** — het deel van de gap dat al bestond bij venster-start (`target_soc` t.o.v. de anchor). Hier
-  mag de PV-marge op korten, zoals voorheen.
-- **`erosion_pct`** — hoeveel `soc` sinds de anchor is *teruggezakt* (charge) of *opgelopen* (discharge).
-  Dit krijgt **geen** marge-korting: `need_pct = erosion_pct + max(0, soc_gap − margin_pct)`. Zodra `soc`
-  onder de anchor zakt (charge) wordt dat bedrag onmiddellijk en volledig met `extra_w` gecompenseerd —
-  ongeacht de oorzaak, self-use-ontlading incluis. **Maar alleen zolang de anchor niet voorbij het doel
-  ligt**, zie de anchor-klem hieronder.
-
-Effect: een hold-op-SOC zolang er niets misgaat, een geduldige groei naar `target_soc` met PV-marge, én een
-directe correctie zodra er ongewenst wordt teruggezakt — zonder dat er een aparte feedback-lus op de rauwe
-batterijrichting (33135) nodig is. Omdat de correctie loopt via de al bestaande `battery_soc_hires` (10s-
-resolutie) en de al bestaande `RC_THRESHOLD_W`-drempel (100W) als natuurlijke ruisonderdrukking fungeert,
-blijft het ontwerp volledig feedforward — geen nieuw hysterese-/slinger-risico.
-
-`erosion_pct` is zichtbaar in de log (`ESP_LOGI`) naast `soc`/`margin`/`extra`/`adj`, voor observeerbaarheid.
-
-### Anchor-klem: het anker mag het doel niet passeren — incident 07-09-2026
-
-De erosion-bescherming hierboven compenseert alles onder de anchor. Dat is alleen gewenst tot aan
-`target_soc`. Ligt de anchor bóven het doel, dan wordt een daling *richting* dat doel als erosie behandeld
-en meteen weggewerkt — precies het tegenovergestelde van wat de strategie vroeg.
-
-**Waargenomen 07-09-2026 02:00–05:00**: `mode=charge`, anchor ~54%, `target_soc=17%`. `soc_gap` werd correct
-0 (doel ligt onder de anchor), maar `erosion_pct` wordt daar BUITEN bij opgeteld en wekte de aandrijving
-weer tot leven. Elke dip onder 54% werd bijgevuld: de accu bleef geplakt en het huis liep **0,93 kWh op
-netstroom à ~31 ct**. De strategie vroeg om ontladen en kreeg een hold — plan en uitvoering liepen uiteen,
-wat de hele planningslus onderuit haalt.
-
-**Oplossing** — één regel per modus, vóór de gap/erosion-splitsing:
-
-```
-if mode == "charge":     anchor_soc = min(anchor_soc, target_soc)
-if mode == "discharge":  anchor_soc = max(anchor_soc, target_soc)
-```
-
-Daarmee geldt altijd: alles ONDER de anchor is erosie (direct bijladen, geen PV-korting), alles TUSSEN
-anchor en `target_soc` is de gap (PV-marge mag korten). In het geval hierboven wordt de anchor 17%: erosie
-geldt pas onder 17%, en tussen 17% en 17% is geen gap — dus geen aandrijving, en de accu levert gewoon aan
-het huis.
-
-Als bijvangst kan `need_pct` niet meer voorbij het doel schieten: de som is per constructie begrensd door
-`target_soc`.
-
-### Ratel: het anker schuift mee met echte voortgang — 07-09-2026
-
-`soc_gap` werd alleen uit anker en `target_soc` berekend, en het anker stond vast vanaf het arm-moment.
-Daardoor kromp de gap **niet** als de accu daadwerkelijk richting het doel bewoog, en `erosion_pct` reageert
-per definitie alleen op beweging de verkeerde kant op — dus succes kon de aandrijving niet uitzetten. Bij een
-dump van 46% naar `target_soc=40,1%` bleef `need_pct` 5,9pp staan terwijl `remaining_h` naar de
-2-minutenvloer kromp, met vol doorduwen dwars door het doel heen tot gevolg. Bij laden idem: haalde PV het
-doel vroeg, dan forceerde de sturing bij het uitdoven van de marge alsnog netstroom-import.
-
-De fix is een ratel op het anker: elke cyclus schuift het anker mee met de echte `soc` — bij `charge` alleen
-omhoog, bij `discharge` alleen omlaag — en wordt teruggeschreven naar `g_soc_window_anchor`. Samen met de
-anchor-klem hierboven convergeert het anker naar `target_soc`; vanaf dat punt is `soc_gap` 0 en resteert een
-zuivere hold-op-doel, met directe correctie zodra `soc` de verkeerde kant op wegloopt.
-
-Gedragsgevolg om bewust van te zijn: de ratel verdedigt óók tussentijdse winst. Bij wisselend bewolkt weer
-wordt een gewonnen halve procent bij het wegzakken direct hersteld in plaats van op de volgende zonnige
-periode te wachten.
-
-### PV-marge geldt alleen bij laden — 07-09-2026
-
-`margin_pct` werd onvoorwaardelijk afgetrokken, ook in `discharge`. Dat is averechts: de marge betekent "er
-komt gratis PV bij, dus dat deel hoef ik niet zelf te sturen" — een LAAD-aanname. Bij ontladen vult die
-verwachte PV juist de accu die je aan het legen bent, dus hij zou een dump *urgenter* moeten maken in plaats
-van erop te korten.
-
-Met `PV_BUDGET_WH=2000` op `BATTERY_WH=20000` loopt de marge op tot **10pp**. Gemeten 07-09 bij
-`target_soc=40,1%` / `soc=46%` (gap ~5,9pp): om 07:05 was de marge 8,3pp → `need_pct=0` → **geen ontlading**;
-om 07:30 nog 4,2pp → 29% van de gevraagde snelheid. De dump kwam pas op gang in de laatste minuten vóór de
-deadline; wat er in die uren zakte was self-use voor de huislast, niet de gevraagde ontlading.
-
-Fix: `if (mode != "charge") margin_pct = 0.0f;` — op 0 zetten in plaats van de aftrekking overslaan, zodat
-de `ESP_LOGI`-regel ook echt 0 toont.
+Op deze dagen was er werkelijk ~1-2 kW PV-overschot, ongeveer wat de oude PV-marge aannam — daarom
+verschillen oud en nieuw weinig. Het knelpunt is het afknijpen door de BMS boven ~89%: op 10-10 haalt
+zelfs een heel uur vol vermogen de 99 niet. Zo'n doel moet het EMS eerder inplannen. Het nieuwe gedrag
+wint vooral als er géén PV is (de oude marge trok dan toch 9pp af) en bij huislast op het plafond.
 
 ### De deadline: eerstvolgend wandklok-uur, geen relatieve reset
 
-`target_soc_deadline_ms` wordt gearmd via het `arm_soc_deadline` script, dat het **eerstvolgende hele wandklok-uur** pakt (via de `time:`-component `ha_time`, gevoed door de HA-API — geen extra hardware/NTP nodig). Is er nog geen geldige kloktijd (bv. net opgestart), dan valt de firmware terug op het oude gedrag (now + 1 uur). Op hetzelfde moment wordt ook `g_soc_window_anchor` gezet (snapshot van `soc`) — zie [Erosion-bescherming](#erosion-bescherming-nooit-onder-het-venster-startpunt-terugzakken) hierboven.
+`target_soc_deadline_ms` wordt gearmd via het `arm_soc_deadline` script, dat het **eerstvolgende hele wandklok-uur** pakt (via de `time:`-component `ha_time`, gevoed door de HA-API — geen extra hardware/NTP nodig). Is er nog geen geldige kloktijd (bv. net opgestart), dan valt de firmware terug op now + 1 uur.
 
 `arm_soc_deadline` wordt uitgevoerd zodra:
 - de mode wijzigt (`select.control_mode` `on_value`) — geldt voor élke gekozen mode, ook `hold`/`level` (waar `target_soc_deadline_ms` vervolgens meteen weer op 0 wordt gezet door `apply_mode`)
 - `target_soc` wijzigt (`number.target_soc` `on_value`)
 
-Daarna telt de deadline af in kloktijd; de 30s-interval (`apply_mode`) reset hem niet, en dankzij de write-on-change fix in `ems_controller.py` vuurt `on_value` alleen nog bij een echte wijziging — dus `remaining_h` telt daadwerkelijk af richting het klok-uur in plaats van telkens te resetten. Effect:
-- Vlak na een wijziging is de PV-marge maximaal (10% van de accucapaciteit) → `extra_w` blijft 0 zolang PV het gat binnen die marge kan dichten.
-- Zodra nog maar 5 minuten resteren (`MARGIN_LEAD_MS`) is de marge uitgedoofd naar 0 — vanaf dat punt moet de sturing het volledige resterende gat zelf dichten, ongeacht PV.
-- Zodra de deadline binnen 2 minuten ligt (`RATE_FLOOR_MS`), klemt de deler vast op 2 minuten resterend — de sturing blijft daarna maximaal duwen totdat de gebruiker `target_soc` opnieuw instelt, van mode wisselt, of het volgende klok-uur aanbreekt (waarna een nieuwe `arm_soc_deadline`-aanroep nodig is om verder te tellen — dat gebeurt pas bij de eerstvolgende mode- of target_soc-wijziging).
+Daarna telt de deadline af in kloktijd; de 30s-interval (`apply_mode`) reset hem niet. Zodra de deadline binnen 2 minuten ligt (`RATE_FLOOR_MS`), klemt de deler vast op 2 minuten — de sturing blijft dan maximaal duwen tot `target_soc` of de mode opnieuw wordt ingesteld.
 
-`target_soc` is dus een echte SOC-waarde (7–100%): hoe lang geleden hij (of de mode) voor het laatst is aangepast, bepaalt hoe dicht de eerstvolgende klok-uur-deadline is genaderd, hoeveel van de PV-marge al is uitgedoofd, en dus hoe agressief de sturing intussen is geworden.
-
-### Typisch gebruik: export voorkomen + SOC garanderen bij lage spotprijs
+### Typisch gebruik
 
 ```
-mode:        charge
-target_grid: 0W       # geen export toegestaan; batterij laadt alleen op PV-surplus
-target_soc:  80%       # garandeert het SOC-doel ook als er geen PV-surplus is
+mode: charge, target_grid: 0W, target_soc: 80%    # laden tot 80% vóór het hele uur, nooit export
+mode: charge, target_grid: 0W, target_soc: = SOC   # accu vasthouden, EV/huis vanuit het net
 ```
 
-Met `target_grid = 0` laadt de batterij in eerste instantie alleen op PV-surplus. Naarmate de deadline verstrijkt zonder dat `target_soc` gehaald wordt, duwt `extra_w` het setpoint steeds verder richting import om het doel alsnog te halen.
+### Geschiedenis: PV-marge en anker (tot 18-10-2026)
+
+Tot 18-10 trok de sturing vooraf een aangenomen "gratis" PV-bijdrage af (`PV_BUDGET_WH` = 2 kWh,
+`PV_RATE_W` = 2 kW, uitdovend tot 5 min vóór de deadline), ongeacht of er PV was. Daardoor startte het
+laden te laag en schoof het naar het eind van het uur (10-10: start ~6,6 kW i.p.v. ~8,6 kW). Om dat
+wachten veilig te maken waren er een venster-anker (`g_soc_window_anchor`), erosie-bescherming,
+anker-klem en ratel (06/07-09). Zonder PV-marge is de som van `soc_gap` en `erosion_pct` altijd
+`max(0, target_soc − soc)`, dus is dat allemaal vervallen. De lessen blijven gelden en zitten nu in
+`not_past_target`: geen aandrijving voorbij het doel (07-09: anker 54% bij doel 17% → 0,93 kWh netstroom) en
+een hold op het doel zodra het gehaald is.
 
 ---
 
@@ -347,118 +280,137 @@ Met `target_grid = 0` laadt de batterij in eerste instantie alleen op PV-surplus
 echt naar een nieuwe 1%-stap springt, niet op een vaste klok. Voor een sturing die elke 30s bijstuurt is
 dat te grof en te traag.
 
-### Aanpak: doorlopende telling, twee klemmen
+### Aanpak (v2, 07-10-2026): BMS volgen rond BMS + offset
 
-De stapgrens van de BMS ligt **niet** op een vaste plek. Waargenomen 07-09-2026: lang wachten op de
-overgang 47 → 48, en vlak daarna meteen 48 → 49. De SOC en de eigen kWh-teller van de BMS lopen dus
-niet synchroon. Daarom wordt de telling *niet* naar de stap toe getrokken — dat zou de betere
-informatie juist weggooien — maar krijgt hij twee verschillende klemmen:
-
-- **lopend ±0,9pp** rond de BMS-melding: ruimte om vooruit te lopen op een achterblijvende stap;
-- **±0,5pp op het moment van een stap**: alleen als de telling daarbuiten ligt wordt hij bijgetrokken.
+`hires` volgt de BMS binnen een band, maar rond **BMS + offset** in plaats van rond de BMS zelf. De offset
+ontstaat alleen bij een aangetoonde BMS-stilstand en verdwijnt alleen bij een herijking (BMS 100 of ≤ 7) of
+als de BMS zelf bijtrekt. De band zit op de **toestand** (`g_hires`), niet alleen op de uitvoer — een
+weggelopen telling kan dus niet ongemerkt bewaard blijven.
 
 ```
-battery_soc (33139) on_value:
-  als waarde écht gewijzigd is (niet elke poll, want vaak dezelfde waarde):
-    als geen vorige waarde OF nieuwe_soc >= 99 OF <= 7:      # opstart / eindpuntzone
-      anchor = nieuwe_soc                                    # BMS exact overnemen
-    anders:
-      # h = exact wat battery_soc_hires publiceerde: GEKLEMD, niet de rauwe telling
-      als vorige_soc >= 99 of <= 7: h = vorige_soc
-      anders:
-        h = g_batt_hires_anchor + (g_batt_energy_wh - g_batt_energy_anchor_wh) / capaciteit_wh * 100
-        h = clamp(h, vorige_soc - 0.9, vorige_soc + 0.9)
-      anchor = clamp(h, nieuwe_soc - 0.5, nieuwe_soc + 0.5)
+substitutions:  hires_top_pct 100, hires_floor_pct 7, hires_band_pct 0.9, hires_step_band_pct 0.5,
+                hires_stall_pp 1.5, hires_catchup_pp 0.5, hires_offset_max 15
+globals:        g_hires (pp), g_off (pp, restore_value), g_e_step (pp energie sinds laatste BMS-stap),
+                g_h_step (hires direct na de laatste BMS-stap)
 
-    g_batt_hires_anchor     = anchor
-    g_batt_energy_anchor_wh = g_batt_energy_wh               # ALTIJD verversen
-    g_batt_soc_last_raw     = nieuwe_soc
+battery_power_raw (33149) on_value:                     # dh = energie in pp, + = laden (teken uit 33135)
+  g_e_step += dh
+  als bms >= 100 of bms <= 7: hires = bms ; g_off = 0
+  anders:
+    als |g_e_step| > 1.5:  h = g_h_step + g_e_step                    # stilstand: cumulatief vanaf laatste stap
+    anders:                h = clamp(hires + dh, bms + g_off - 0.9, bms + g_off + 0.9)   # band rond bms+offset
+    hires = clamp(h, 7.1, 99.9)                                       # 100 en 7 alleen via de BMS
 
-battery_power_raw (33149-33150) on_value:
-  dt_h = (now - g_batt_energy_last_ms) / 3600000
-  p = abs(battery_power_raw)                                  # zie hieronder: alleen magnitude betrouwbaar
-  als battery_direction_raw (33135) == 1 (discharge): p = -p
-  g_batt_energy_wh += p * dt_h                                # loopt continu door, wordt nooit gereset
-  g_batt_energy_last_ms = now
-
-battery_soc_hires (elke 10s):
-  als bms >= 99 of bms <= 7:  return bms                      # telling UIT, BMS is autoritatief
-  delta_wh = g_batt_energy_wh - g_batt_energy_anchor_wh       # CUMULATIEF sinds anchor
-  hires    = g_batt_hires_anchor + delta_wh / (battery_capacity_kwh * 1000) * 100
-  return clamp(hires, bms - 0.9, bms + 0.9)
+battery_soc (33139) on_value, bij een echte wijziging prev → x:
+  als x >= 100 of x <= 7:         hires = x ; g_off = 0                       # herijking
+  anders als geen prev (opstart): hires = x + g_off                           # g_off is bewaard
+  anders als |g_e_step| > 1.5:    g_off = clamp(hires - x, ±15)              # stilstand eindigt
+  anders als g_off ≠ 0 en |g_e_step| < 0.5 en |hires - x| < |hires - prev|:
+                                  g_off = hires - x ; als |g_off| < 0.9: g_off = 0   # BMS trekt bij
+  anders:                         hires = clamp(hires, x + g_off - 0.5, x + g_off + 0.5)   # normale stap
+  hires = clamp(hires, 7.1, 99.9)   — NIET na een herijking, anders bleef hires bij BMS 100 op 99,9
+  g_h_step = hires ; g_e_step = 0
 ```
 
-**Her-anker op de geklemde stand, en altijd** — dit is de subtiliteit die het makkelijkst misgaat. De
-lopende klem zit op de *uitvoer*, niet op de *toestand*: intern loopt `anchor + energie sinds anchor`
-ongeklemd door. Bij een achterlopende BMS liep die rauwe waarde naar bv. 49,2 terwijl de sensor op de
-bandrand 47,9 vastgepind stond. Her-ankerde je dan op die 49,2, dan gaf de stap naar 48 een sprong naar
-48,5 — de opgebouwde fout werd bewaard in plaats van weggegooid. Daarom wordt her-ankerd op `h`, de
-waarde zoals *gepubliceerd* (dus geklemd), en wordt het energie-snapshot bij **elke** stap ververst.
+Afwijkingen van het handoff-voorstel (06-10), alle bewust:
+- de slotklem op [7,1 … 99,9] wordt overgeslagen na een herijking — letterlijk overgenomen zou `hires` bij
+  BMS 100 op 99,9 blijven staan;
+- `g_off` heeft `restore_value: true`. Zonder bewaren sprong `hires` na een herstart midden in een
+  offsetperiode tot ~10pp terug naar de BMS, terwijl de offset alleen bij een herijking hoort te verdwijnen;
+- **tijdens een stilstand telt hires cumulatief vanaf de stand bij de laatste stap** (`g_h_step + g_e_step`).
+  In het voorstel telde hij pas vrij vanaf de bandrand: tussen de band (0,9) en de stilstanddrempel (1,5) stond
+  `hires` vastgepind en ging per stilstand ~0,4–0,5pp verloren — een deel van de "veilige kant"-afwijking in
+  de tabel hieronder. Zichtbaar gevolg: op het moment dat de stilstand wordt herkend springt `hires` eenmalig
+  ~0,5pp (de ingehouden energie wordt alsnog meegeteld); ruim binnen de maximale sprong van 1,4pp;
+- **"BMS trekt bij" alleen bij een stap naar hires toe met < 0,5pp energie** (`hires_catchup_pp`). In het
+  voorstel vuurde die tak bij élke stap in de richting van `hires` (bv. laden met positieve offset, of verder
+  ontladen met negatieve offset). Omdat de band (0,9) krapper is dan de ~0,97pp energie per BMS-stap, sleet de
+  offset dan ~0,1pp per stap — na een laadstilstand bij het volgende laden over tientallen stappen weg, zonder
+  dat de BMS iets corrigeerde. Een gewone stap valt nu onder de normale-stap-tak en laat de offset gelijk.
 
-**Continuïteit**: concreet voor het 47 → 48-geval parkeert de telling vóór de late stap op de bandrand
-47,9. Die valt binnen [47,5 … 48,5], dus 47,9 wordt het nieuwe anker en de telling loopt daar zonder
-sprong vanaf verder — nu met band [47,1 … 48,9]. Loopt de telling juist áchter (47,2 terwijl de BMS al
-48 meldt), dan trekt de ±0,5-klem hem op naar 47,5: daar wint de BMS, want de stap zegt dat we minstens
-zover zijn.
+Simulatie van deze versie (`hires_v2_sim.py`, port van de lambdas): stilstand op 89 met 6pp ongeteld geeft
+offset +4,9 (was +4,5); 30 gewone laadstappen naar `hires` toe laten de offset op 4,40 (sleet voorheen);
+stappen met 0,3pp energie laten hem krimpen naar 0; bij BMS 100 is `hires` 100; een reboot behoudt de offset.
 
-**Prijs**: met ±0,9 kan `hires` een ánder heel procent aanwijzen dan de BMS. Dat is bewust
-geaccepteerd toen bleek dat de stapgrens van de BMS zelf verschuift — de BMS-melding is op korte
-termijn dus juist niet de betrouwbaardere van de twee.
+De simulatie in de tabellen hieronder rekende nog met 20,55 kWh en zonder de laatste twee aanpassingen; de
+firmware gebruikt 20,48 kWh.
 
-De **eindpunten** worden exact overgenomen: zou je daar ook een marge toepassen, dan zou `hires` de
-100 nooit kunnen aanwijzen.
+### Waarom een offset — BMS-stilstanden 26-09 t/m 06-10
 
-**Telling uit bij de eindpunten** (SOC ≥ 99 of ≤ 7): daar is de stroom te klein voor de shunt
-(CV-taper bovenin, bijna-leeg onderin) en is het juist de BMS die zelf herijkt. Gevolg: `hires` kan
-alleen 99/100 aanwijzen als de BMS dat zelf meldt, en zakt niet onder de vloer. Het bereik van de
-schatting is dus `{7} ∪ [7,1 … 98,9] ∪ {99, 100}` — met opzet een gat vlak vóór de eindpunten.
-De drempels 99 en 7 staan als `hires_top_pct`/`hires_floor_pct` in `substitutions`, zodat de
-ankering en de berekening niet uit elkaar kunnen lopen.
+De BMS (Pylontech Force H3, firmware 0.1.0.5) blijft op twee vaste plekken hangen. BMS-stappen waarbinnen
+meer dan 0,6 kWh stroomde (een normale stap is ~0,2 kWh):
 
-`apply_mode` gebruikt `battery_soc_hires` rechtstreeks als `soc`-bron (geen eigen herberekening meer), met
-fallback naar de ruwe `battery_soc` zolang er nog geen anchor is geweest (net opgestart — hires is dan NAN).
+| Wanneer | BMS | Richting | Niet meegeteld |
+|---|---|---|---|
+| 27-09 15:15 (16 min) | 89→90 | laden | 0,6 kWh |
+| 28-09 11:15 (110 min) | 89→90 | laden | 1,5 kWh |
+| 06-10 15:03 (98 min) | 89→88 | laden | 1,4 kWh |
+| 29-09 01:13 (7 uur) | 21→19 | ontladen | 2,4 kWh |
+| 01-10 23:41 (3,5 uur) | 21→20 | ontladen | 1,7 kWh |
+| 02-10 03:11 (3 uur) | 20→19 | ontladen | 1,0 kWh |
 
-### Waarom geklemd — incident 05-09-2026
+Buiten die plekken telt de BMS goed (196–203 Wh/pp tegen 205,5 nominaal). De 89%-stop bij laden is bekend
+Pylontech-gedrag (ook US3000C/US5000): de SOC blijft op ~89–91% tot de celspanning de volle lading bevestigt
+en springt dan naar 100; Pylontech noemt 90% als startpunt van de balancering.
 
-Zonder klem liep de coulomb-telling ongemerkt weg tijdens een BMS-plateau: op 05-09-2026 bleef de BMS-SOC
-2,5 uur op 89% hangen (LFP-plateau — geen bruikbare spanningsreferentie rond dat punt, en de shunt kan
-~0,5A niet betrouwbaar resolveren), terwijl `battery_soc_hires` ondertussen doortelde tot 95% — 6pp naast
-de werkelijkheid. Erger: bij een doel van 100% stopte de sturing te vroeg, omdat déze schatting al 100
-haalde terwijl de BMS zelf nog op 99% stond. Daardoor bereikte de accu de CV-taper niet en herijkte de BMS
-zijn SOC nooit (de celspanning bleef op 3.388V hangen i.p.v. de ~3.51V die een echte volle lading geeft).
+Na zo'n stilstand telt de BMS gewoon verder vanaf de foute stand; het verschil blijft bestaan tot een echte
+herijking. Terugtrekken naar de BMS-lijn (variant "zacht bijsturen", v1) is daarom fout: de BMS heeft op dat
+moment geen nieuwe informatie. De vorige firmware (lopend ±0,9 rond de BMS) maakte een stilstand bovendien
+onzichtbaar — `hires` pinde op de bandrand en stond stil.
 
-Gevolg van de klem: `hires` kan 100 alleen aanwijzen als de BMS zelf 100 meldt. De sturing moet dus
-doorladen tot de BMS vol zegt, wat de herijking afdwingt. Prijs: een échte BMS-stilstand wordt hiermee
-onzichtbaar — `hires` pint op de bandrand en staat stil zolang de BMS niet update. Bewuste ruil voor een
-harde bovengrens op de fout.
+**Simulatie** (recorder 26-09 – 06-10, vermogen uit 33149):
 
-**Herzien 07-09-2026, in twee stappen.** Eerst van ±0,99pp naar een smalle band, omdat `hires` anders een
-vol procentpunt van de BMS kon afwijken. Een tussenversie met `[−0,50 … +0,49]` bleek bovendien twee gaten
-te houden: bij `bms == 100` liet de band `hires` tot 100,49 oplopen (de telling loopt tijdens de CV-taper
-gewoon door), waardoor `remaining_energy` boven de capaciteit uitkwam; onderaan werd `usable_energy` op
-dezelfde manier negatief. Dat is opgelost door de telling bij de eindpunten helemaal uit te zetten.
+| Variant | Sprongen >1 pp | Grootste sprong | Max. verschil met BMS |
+|---|---|---|---|
+| Vorige firmware (klem ±0,9) | 5 | 1,5 pp | 0,9 |
+| Zacht bijsturen (v1) | 3 | 4,8 pp | 6,7 |
+| **Offset (v2)** | 6 | **1,4 pp** | 10,9 (alleen tijdens en na stilstand) |
 
-Daarna weer verruimd naar ±0,9 toen bleek dat de stapgrens van de BMS zelf verschuift (zie hierboven). De
-smalle band ging er impliciet van uit dat een BMS-stap een betrouwbare waarneming van een vaste drempel is;
-dat blijkt niet zo. Eindstand:
+Fout ten opzichte van de werkelijke SOC, teruggerekend vanaf het moment dat de BMS zich herijkt (7% of 100%):
 
-```
-lopend:      bms − 0,9  ≤  hires  ≤  bms + 0,9
-bij stap:    alleen bijtrekken als hires buiten [bms − 0,5 .. bms + 0,5] ligt
-eindpunten:  bms ≥ 99 of ≤ 7  →  hires = bms
-```
+| Anker | Vóór anker | BMS | Vorige | Zacht (v1) | Offset (v2) |
+|---|---|---|---|---|---|
+| 29-09 10:46 (→7) | 3 uur | +4,5 | +3,6 | −1,5 | **+0,6** |
+| 02-10 08:44 (→7) | 1 uur | +7,0 | +7,5 | +3,4 | **−1,9** |
+| 02-10 08:44 (→7) | 3 uur | +7,7 | +6,8 | +1,8 | **−2,3** |
+| 05-10 17:02 (→100) | 1 uur | −1,2 | −0,3 | 0,0 | +0,5 |
+| 28-09 03:11 (→100) | 1–6 uur | −6,5 | −6,7 | −6,1 | −6,7 |
 
-> **Implementatiedetail — cumulatief, niet incrementeel**: `delta_wh` wordt altijd gemeten als
-> `g_batt_energy_wh − anchor-snapshot` (het totaal sinds de anchor), nooit incrementeel per cyclus
-> opgeteld. Zou je per 10s-cyclus een geklemde increment optellen, dan is er geen echte begrenzing: 360
-> stappen van 10s (1 uur) zouden elk voor zich binnen de band kunnen vallen en toch onbeperkt blijven
-> oplopen.
->
-> **Blijft integreren op 33149, niet op 33161/33165**: die laatste energietellers meten aan de
-> omvormerzijde en bevatten ~100W vaste overhead, wat `battery_soc_hires` tijdens laden systematisch te
-> hoog zou duwen (en de band-klem te vroeg zou laten aanslaan). 33149 is de DC-zijde aan de accuklemmen
-> — dat houdt bovendien het omvormerverbruik verderop in de keten zichtbaar als load, niet als opgeslagen
-> energie.
+- v2 is even rustig als de vorige firmware (sprong maximaal 1,4 pp) en zit bij de bevriezingen binnen ~2–3 pp
+  van de werkelijkheid, tegen 7–8 pp daarvoor. De resterende afwijking valt naar de veilige kant.
+- 28-09: de BMS stond toen al ~6 pp te laag door een stilstand van vóór het begin van de data. De offset bouwt
+  pas op vanaf een stilstand die hij zelf waarneemt.
+- Voorbehoud: "werkelijk" is teruggerekend met hetzelfde vermogenssignaal en dezelfde capaciteit — geen
+  onafhankelijke meting.
+
+**Wat dit niet oplost**: de Solis stopt en begrenst op de BMS-SOC. Staat de BMS 6 pp te laag, dan blijft die
+energie onbruikbaar tot de volgende herijking. v2 zorgt dat het EMS weet hoeveel er werkelijk in zit
+(planning, ledger, accuprijs), niet dat de omvormer erbij kan. Daarvoor is regelmatig een volle lading nodig.
+
+### Eindpunten en de 100%-herijking — incident 05-09-2026
+
+Op 05-09-2026 bleef de BMS 2,5 uur op 89% hangen terwijl een ongeklemde telling doorliep tot 95%. Bij een doel
+van 100% stopte de sturing toen te vroeg (de schatting haalde 100 terwijl de BMS op 99 stond), de accu bereikte
+de CV-taper niet en de BMS herijkte nooit (celspanning bleef op 3,388V i.p.v. ~3,51V). Daarom geldt nog steeds:
+bij BMS 100 of ≤ 7 staat de telling uit en is `hires` exact de BMS-waarde, en daartussen blijft `hires`
+binnen [7,1 … 99,9]. `hires` kan 100 dus alleen aanwijzen als de BMS dat zelf meldt, zodat de sturing bij
+een doel van 100 doorlaadt tot de BMS vol zegt. Een doel onder 100 (bv. 99) mag hires zelf halen.
+
+**18-10-2026: herijking bovenin van ≥ 99 naar 100** (`hires_top_pct` 99 → 100). Met 99 was het punt
+tegelijk herijking en plafond (98,9). Op 15-10 stond de BMS van 13:43 tot 15:00 op 95 terwijl er nog
+~1,3 kWh in ging; `hires` liep vast op 98,9 en het EMS meldde "SOC-bron hires niet ververst". Nu telt
+`hires` door tot 99,9, springt bij BMS 99 niet meer naar 99 (blijft in de band 98,1 … 99,9), en
+`bms_stalled` (bovengrens TOP − 1) blijft zichtbaar tot en met BMS 99. Simulatie (port van beide
+lambda's): stilstand op 95 met 6,3 pp → 99,90 (was 98,90); BMS 98→99 bij hires 98,59 → blijft 98,59
+(was sprong naar 99,00); onder 94 identiek. Bijeffect: bij ontladen van 100 naar 99 wordt `hires` 99,5
+(was 99,0) — dezelfde stap-band als bij elk ander niveau, en gelijk aan het gedrag aan de onderkant (7→8).
+
+> **Blijft integreren op 33149, niet op 33161/33165**: die energietellers meten aan de omvormerzijde en
+> bevatten ~100W vaste overhead, wat `hires` tijdens laden systematisch te hoog zou duwen. 33149 is de DC-zijde
+> aan de accuklemmen — dat houdt bovendien het omvormerverbruik zichtbaar als load, niet als opgeslagen energie.
+
+`apply_mode` gebruikt `battery_soc_hires` rechtstreeks als `soc`-bron, met fallback naar de ruwe
+`battery_soc` zolang er nog geen BMS-melding is geweest (net opgestart — hires is dan NAN).
 
 ### Ontdekt tijdens verificatie: 33149-33150 heeft geen betrouwbaar teken
 
@@ -475,7 +427,9 @@ implementatie doet nu hetzelfde: `fabs()` van de magnitude, teken expliciet uit 
 
 | Entiteit | Type | Resolutie | Noot |
 |---|---|---|---|
-| `sensor.battery_soc_hires` | sensor | 0.01%, elke 10s | `NAN` zolang er nog geen anchor is geweest; anders lopend geklemd op ±0,9pp t.o.v. `g_batt_soc_last_raw`. Telling staat uit bij SOC ≥ 99 en ≤ 7 (dan exact de BMS-waarde), dus bereik `{7} ∪ [7,1 … 98,9] ∪ {99, 100}` |
+| `sensor.battery_soc_hires` | sensor | 0.01%, elke 10s | `NAN` zolang er nog geen BMS-melding is geweest; volgt BMS + offset binnen ±0,9pp, telt vrij tijdens een BMS-stilstand. Bij SOC 100 en ≤ 7 exact de BMS-waarde, daartussen [7,1 … 99,9] |
+| `sensor.battery_soc_offset` | sensor | 0.01pp, elke 10s | Geschat verschil echte SOC − BMS (`g_off`). Alleen ≠ 0 na een stilstand; wordt pas gezet als de stilstand *eindigt*. Overleeft een herstart |
+| `binary_sensor.bms_stalled` | binary | live | Aan zolang er sinds de laatste BMS-stap meer dan 1,5pp energie is gestroomd — het enige live signaal tijdens een stilstand |
 
 ---
 
@@ -537,25 +491,65 @@ weergave voor toekomstig gebruik.
 
 ---
 
+## Residual power en energie
+
+`residual_power` is alles achter de meter behalve de accu-AC-poort: huisverbruik (incl. EV-lader en
+warmtepomp) minus de PV. Alle PV is AC-gekoppeld (APsystems en Omnik); aan de Solis zitten **geen**
+PV-strings. Daardoor daalt `residual_energy` alleen bij PV-overschot.
+
+```
+residual_power  = grid_power (+ = import) − accupoort (+ = laden)
+                = meter_power_raw + grid_port_power        # 33151 in Solis-conv., + = export
+residual_energy = import (33283) − export (33285) + discharge (33165) − charge (33161)
+```
+
+- **Waarom niet 33147** (House load power): U16, kan niet negatief. Bij Omnik-overschot blijft hij op 0
+  terwijl de werkelijke residual negatief is. De Solis ziet de Omnik niet als eigen PV.
+- **`residual_energy` is tweezijdig** (`state_class: total`): hij daalt bij PV-overschot. De absolute
+  waarde is betekenisloos (verschil van levensduurtellers); alleen de verandering telt.
+- **Meetzijde accutellers**: 33161/33165 zitten iets boven de BMS-DC-teller (18-10: Solis 12,88 kWh
+  geladen tegen Pylontech 12,735), maar niet aantoonbaar op de AC-poort. Omzettingsverlies en
+  stand-by van de omvormer komen daardoor in `residual_energy` terecht, altijd aan de oplopende kant —
+  **bewust**: dat verlies is huisgebruik. `residual_power` (op de AC-poort) bevat het niet.
+- Per minuut niet strikt monotoon: net- en accutellers zitten in twee requests en tellen in stappen
+  van 0,01 kWh. Over een kwartier middelt dat weg.
+- Resolutie 0,01 kWh voor alle vier de tellers (accutellers gecontroleerd tegen de HA-integratie
+  `solis_s6_eh3p`, die 14575,55 kWh toont).
+
 ## Netstroom per fase (`grid_current_a/b/c`)
 
-Voorbereidende stap voor de per-fase-`MAX_GRID_W`-TODO hierboven: de omvormer stuurt symmetrisch over de 3
+Voedt de fasegrens in de [SOC-deadline sturing](#soc-deadline-sturing-charge--discharge): de omvormer stuurt symmetrisch over de 3
 fases, dus de werkelijke aansluitlimiet (25A per fase) wordt bepaald door de zwaarst belaste fase — bv. een
 EV-lader die asymmetrisch op één fase trekt. `grid_current_a/b/c` (registers 33252/33254/33256, op de
 "Grid"-locatie geconfigureerde meter, zie `meter_type_cfg`=`0x0105`) lezen de werkelijke netstroom per fase,
 rechtstreeks in Ampère — geen omrekening via vermogen/spanning nodig (dat zou bij afwijkende netspanning of
 een niet-cos φ=1-belasting een systematische fout geven).
 
-**Status: alleen uitlezen, nog niet in de sturing verwerkt.** De sensoren staan op een aparte FC04-request
-(buiten het hoofdblok, span 5, geen bridge nodig) met `skip_updates: 10` (~10s-cadans). De koppeling naar een
-dynamische `MAX_GRID_W` in `apply_mode` — met een aan te bepalen omgang met kortstondige piekstromen
-(~10s tolerantie is acceptabel) — is nog niet geïmplementeerd.
+Sinds 18-10-2026 in de sturing verwerkt (I_LIM 25A, zie aldaar). De sensoren staan op een aparte
+FC04-request (buiten het hoofdblok, span 5; `register_count: 2` op 33252/33254 maakt het één request) met
+`skip_updates: 10` (~11s-cadans).
 
 ---
 
 ## Schrijftiming & Modbus protocol
 
-`command_throttle: 750ms` op de modbus_controller zorgt voor minimaal 750ms tussen frames op de bus, ongeacht de diepte van de queue.
+`command_throttle: 750ms` op de modbus_controller heeft sinds ESPHome 2026.x **geen effect meer** (compile-waarschuwing; verdwijnt in 2027.2). De afstand tussen frames regelt nu `turnaround_time` op de `modbus`-component — niet gezet, dus de default van 600ms.
+
+`skip_updates: N` bij `update_interval: 1s` betekent: eens per N+1 seconden. Een poll die nog in de
+wachtrij staat wordt niet opnieuw toegevoegd (de hub ontdubbelt), dus de meter-read (33263, elke 2s)
+kan de wachtrij niet verstoppen: hij vult in de praktijk de vrije bus-tijd. De grid metrics zijn niet
+functioneel nodig; minder samples is acceptabel.
+
+Requests (na het aaneensluiten van de ranges, zie [Read registers](#read-registers-function-code-0x04)):
+
+| Request | Cadans |
+|---|---|
+| 33263 meter | 2s |
+| 33135–33152 hoofdblok | 6s |
+| 33252–33256 fasestromen | 11s |
+| 33161–33166 en 33283–33286 energietellers | 60s |
+| 33213 overdischarge mirror | 15 min |
+| writes 43133/43132 | 30s |
 
 - **Direct bij wijziging**: `select.control_mode` en beide `number`-entiteiten roepen `apply_mode` synchroon aan via `on_value` (mode- en target_soc-wijziging roepen bovendien eerst `arm_soc_deadline` aan).
 - **interval 30s** → `apply_mode` (setpoint + eventueel RC-herbevestiging, zie [Modi](#modi)) — dit is tevens de keepalive tegen de RC-timeout van de Solis (ingesteld op 2 minuten via 43282, dus 4× marge).
@@ -568,12 +562,12 @@ dynamische `MAX_GRID_W` in `apply_mode` — met een aan te bepalen omgang met ko
 
 ## Grid Metrics — tumbling window (15 min)
 
-De controller accumuleert elke seconde statistieken over `meter_power_raw` (1Hz intern) en publiceert ze elke 15 minuten als HA-sensoren. Zo hoeft de HA-recorder geen ruwe 1Hz-data op te slaan.
+De controller accumuleert bij elke meter-read statistieken over `meter_power_raw` (elke 2s, lage prioriteit — zie [Schrijftiming](#schrijftiming--modbus-protocol)) en publiceert ze elke 15 minuten als HA-sensoren. Zo hoeft de HA-recorder geen ruwe meterdata op te slaan.
 
 ### Architectuur
 
 ```
-meter_power_raw (1Hz, internal)
+meter_power_raw (2s, internal)
   ├── on_value → stats-accumulatie (min/max/sum/count/median-buffer/histogram/crossings)
   └── [geen HA-publicatie]
 
@@ -596,7 +590,7 @@ interval: 15min → publish_grid_metrics script
 | `sensor.nexus_control_grid_metric_max` | sensor | W | Maximum gridvermogen in venster (ruwe waarde) |
 | `sensor.nexus_control_grid_metric_mean` | sensor | W | Rekenkundig gemiddelde (ruwe waarde) |
 | `sensor.nexus_control_grid_metric_median` | sensor | W | Mediaan (gesorteerde buffer op publish-moment, ruwe waarde) |
-| `sensor.nexus_control_grid_metric_samples` | sensor (total) | — | Aantal samples in venster (~900 bij normaal bedrijf); HA som = totaal/uur |
+| `sensor.nexus_control_grid_metric_samples` | sensor (total) | — | Aantal samples in venster (max ~450; minder als de bus vol zit); HA som = totaal/uur |
 | `sensor.nexus_control_grid_metric_crossings` | sensor (total) | — | Zero-crossings (import↔export) in venster; HA som = totaal/uur |
 | `sensor.nexus_control_grid_metric_histogram` | text | JSON | Verdeling van `grid − target_grid` over 9 buckets |
 
