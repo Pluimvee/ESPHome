@@ -6,7 +6,7 @@
 # ~10s. So instead of polling the submeter on a fixed interval and hoping the
 # samples line up, the 1s interval below watches for the moment the P1 numbers
 # actually change and polls the SDM72 right then. The Modbus round-trip at 9600
-# baud is ~30ms, so both samples describe the same instant and House Load below
+# baud is ~30ms, so both samples describe the same instant and House Gross Power below
 # is a real subtraction instead of two readings up to 10s apart.
 #
 # Pin choice (ESP32-C3 SuperMini): the P1 line must stay off the strapping pins
@@ -35,7 +35,9 @@
 #     <meter> Energy             the meter's own Import minus Export counters,
 #                                both out of a single register read
 #     Grid Power/Consumed        P1 import minus export, same telegram
-#     House Energy               Grid Consumed + PV Energy, both meter counters
+#     House Gross Energy         Grid Consumed + PV Energy, both meter counters.
+#                                "Gross" because the battery is not netted out:
+#                                charging counts as house load, discharging lowers it
 #
 #   RECONSTRUCTED, anchored once a minute - trend is sound, split is an estimate
 #     <meter> Energy L1..L3      the SDM72D-M has no per-phase energy register.
@@ -45,10 +47,10 @@
 #                                phase a short load landed on remains a guess.
 #
 #   INDICATIVE - limited by its slowest input
-#     House Load                 PV + grid. The P1 only refreshes every ~10s, so
+#     House Gross Power          PV + grid. The P1 only refreshes every ~10s, so
 #                                this is a 10s-resolution figure no matter how
 #                                fast PV is sampled. Build automations on House
-#                                Energy, not on this.
+#                                Gross Energy, not on this.
 #
 # Everything here is NET (import - export), deliberately. The obvious register for
 # a meter total, 0x0156, is throughput (import + export) - confirmed on the meter:
@@ -193,7 +195,7 @@ modbus:
 
 # Each meter polls on its own 1s clock, decoupled from the P1. Only the phase
 # power range is read every second (3 transactions); the energy register carries
-# skip_updates: 59 so it lands once a minute. House Load is the one value that
+# skip_updates: 59 so it lands once a minute. House Gross Power is the one value that
 # still needs both sources aligned, and it is published from the grid side below -
 # with power sampled every second, the PV term is at most 1s old when it fires.
 modbus_controller:
@@ -260,7 +262,7 @@ globals:
 
   # Latest raw phase power, same index layout. The published sensors are throttled
   # to 5s for Home Assistant's sake, and a throttled publish does not update
-  # .state - so anything needing a fresh value (the totals, House Load) reads here.
+  # .state - so anything needing a fresh value (the totals, House Gross Power) reads here.
   - id: phase_w
     type: float[9]
     restore_value: false
@@ -270,7 +272,7 @@ interval:
   - interval: 1s
     then:
       - lambda: |-
-          // --- House Load: the one value that needs both sources aligned ---
+          // --- House Gross Power: the one value that needs both sources aligned ---
           // Published from the grid side, because that is the slow one: the P1 only
           // refreshes its figures every ~10s, while PV is sampled every second. So
           // firing on a grid change pairs a fresh P1 value with a PV term at most 1s
@@ -286,7 +288,7 @@ interval:
           if (isnan(imp) || isnan(expo) || isnan(a) || isnan(b) || isnan(c)) {
             // Undefined without both sources - say so rather than hold a stale number
             if (was_valid) {
-              id(house_load).publish_state(NAN);
+              id(house_gross_power).publish_state(NAN);
               was_valid = false;
             }
           } else {
@@ -297,7 +299,7 @@ interval:
               id(last_p1_net) = net;
               since_publish = 0;
               was_valid = true;
-              id(house_load).publish_state(a + b + c + net);
+              id(house_gross_power).publish_state(a + b + c + net);
             }
           }
 
@@ -1667,10 +1669,10 @@ sensor:
   # publish_state() unconditionally and publish_state() always runs the callback.
   # So a perfectly steady PV output still refreshes this.
   # The one way to break that is adding a filter (delta, throttle, ...) to PV
-  # Power - a suppressed publish silently stops House Load too.
+  # Power - a suppressed publish silently stops House Gross Power too.
   - platform: template
-    name: "House Load"
-    id: house_load
+    name: "House Gross Power"
+    id: house_gross_power
     icon: "mdi:home-lightning-bolt"
     unit_of_measurement: "W"
     device_class: power
@@ -1678,17 +1680,18 @@ sensor:
     accuracy_decimals: 0
     update_interval: never
 
-  # The cumulative counterpart of House Load. Grid Consumed is already net
+  # The cumulative counterpart of House Gross Power. Grid Consumed is already net
   # (import - export), so adding PV gives everything the house drew, whatever
-  # its source. Both counters move slowly, so this runs on its own 60s schedule
+  # its source - battery charging included, since this hub cannot see the
+  # battery. Both counters move slowly, so this runs on its own 60s schedule
   # rather than the Modbus sync - energy needs no sub-second alignment.
   #
   # state_class is `total`, not `total_increasing`: Grid Consumed itself falls
   # whenever export runs ahead of import, and a total_increasing sensor would
   # read such a dip as a counter reset and book a huge phantom delta.
   - platform: template
-    name: "House Energy"
-    id: house_energy
+    name: "House Gross Energy"
+    id: house_gross_energy
     icon: "mdi:home-lightning-bolt"
     unit_of_measurement: "kWh"
     device_class: energy
