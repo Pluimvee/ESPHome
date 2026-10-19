@@ -1122,7 +1122,11 @@ script:
           // hooguit één ronde, dat kan de 25A-zekering hebben.
           const float I_LIM_A     = 25.0f;
           const float W_PER_A     = 690.0f;
-          const uint32_t RATE_FLOOR_MS = 120000UL;  // ondergrens op de deler in de R-rekensom
+          // Ondergrens op de deler in de R-rekensom: één apply_mode-ronde. Met 2 min (tot 19-10)
+          // deelde elke ronde in de laatste 2 min het restant opnieuw door "nog 2 min": het vermogen
+          // zakte per ronde ~25% (9,0 → 7,2 → 5,4 → 4,2 → 3,1 kW) en het gat ging nooit dicht
+          // (19-10 15:00: 81,7% tegen doel 82,3%).
+          const uint32_t RATE_FLOOR_MS = 30000UL;
           const float RC_THRESHOLD_W = 100.0f;  // te kleine setpoints zijn RC-adjustment niet waard
 
           float tgt_w      = id(target_grid_number).state;

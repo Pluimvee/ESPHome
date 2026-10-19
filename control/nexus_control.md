@@ -189,7 +189,7 @@ BATTERY_WH    = 20480     # substitutions.battery_capacity_kwh
 MAX_GRID_W    = 10000     # |setpoint|: meer neemt de Solis via 43133 niet aan
 I_LIM_A       = 25        # hoofdzekering per fase
 W_PER_A       = 690       # 3 x 230V: 1W setpoint = 1/690 A extra op elke fase
-RATE_FLOOR_MS = 120000    # ondergrens op de deler (2 min)
+RATE_FLOOR_MS = 30000     # ondergrens op de deler: één apply_mode-ronde (was 2 min tot 19-10)
 
 not_past_target = soc <= target_soc      # charge   (discharge: soc >= target_soc)
 if soc geldig and not_past_target:
@@ -251,7 +251,13 @@ wint vooral als er géén PV is (de oude marge trok dan toch 9pp af) en bij huis
 - de mode wijzigt (`select.control_mode` `on_value`) — geldt voor élke gekozen mode, ook `hold`/`level` (waar `target_soc_deadline_ms` vervolgens meteen weer op 0 wordt gezet door `apply_mode`)
 - `target_soc` wijzigt (`number.target_soc` `on_value`)
 
-Daarna telt de deadline af in kloktijd; de 30s-interval (`apply_mode`) reset hem niet. Zodra de deadline binnen 2 minuten ligt (`RATE_FLOOR_MS`), klemt de deler vast op 2 minuten — de sturing blijft dan maximaal duwen tot `target_soc` of de mode opnieuw wordt ingesteld.
+Daarna telt de deadline af in kloktijd; de 30s-interval (`apply_mode`) reset hem niet. Zodra de deadline binnen 30s ligt (`RATE_FLOOR_MS`, één `apply_mode`-ronde), klemt de deler vast op 30s — de sturing blijft dan maximaal duwen tot het doel gehaald is of `target_soc`/mode opnieuw wordt ingesteld.
+
+> **19-10-2026: vloer van 2 min naar 30s.** Met 2 min werd in de laatste 2 minuten elke ronde het restant
+> opnieuw door "nog 2 min" gedeeld: het vermogen zakte per ronde ~25% (14:58 → 15:00: 9,0 → 7,2 → 5,4 →
+> 4,2 → 3,1 kW) en het gat ging nooit dicht — 81,7% om 15:00 tegen een doel van 82,3% (0,12 kWh tekort).
+> Vóór 14:58 laadde de accu lineair op 7,5–9 kW. Met 30s blijft R tot de laatste ronde gelijk (~9,5 kW
+> met de cijfers van 19-10) en sluit de laatste ronde het gat.
 
 ### Typisch gebruik
 
