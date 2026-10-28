@@ -1,4 +1,4 @@
-﻿# Copyright (c) 2026 Pluimvee
+# Copyright (c) 2026 Pluimvee
 # Nexus Control - Solis S6-EH3P battery EMS controller via Modbus TCP
 
 substitutions:
@@ -16,21 +16,20 @@ substitutions:
   # 100 blijft daardoor alleen haalbaar via een BMS-melding van 100 (les van 05-09).
   hires_top_pct: "100"
   hires_floor_pct: "7"
-  # Bandbreedtes voor battery_soc_hires: lopend (hoeveel de telling van de BMS-melding
-  # mag afwijken) en bij een BMS-stap (hoe ver de telling dan wordt bijgetrokken).
-  # Ook hier één plek, want ankering en berekening moeten dezelfde band gebruiken.
-  hires_band_pct: "0.9"
-  hires_step_band_pct: "0.5"
+  # hires v3 (PBI-044, 28-10-2026): tellen in ampère i.p.v. watt. Capaciteit en laadfactor
+  # gefit op drie ijkpuntparen 15-10..22-10 (Solis P/V tegen BMS 7/100, rms 0,06pp) —
+  # opnieuw toetsen zodra er meer ijkpunten zijn.
+  hires_ah: "50.5"
+  hires_chg_factor: "1.013"
   # Energie (pp) sinds de laatste BMS-stap waarboven we een BMS-stilstand aannemen. Een
   # normale stap is ~1pp; de BMS blijft op vaste plekken hangen (89-90 bij laden, 19-21
-  # bij ontladen) en telt daarna door vanaf de foute stand.
+  # bij ontladen). Sinds v3 alleen nog diagnose (bms_stalled), geen invloed op hires.
   hires_stall_pp: "1.5"
-  # "BMS trekt bij" alleen bij een stap naar hires toe waar minder energie achter zit dan
-  # dit (pp). Een gewone stap heeft ~1pp; zonder deze grens sleet de offset bij elke
-  # gewone stap in de richting van hires met ~0,1pp.
-  hires_catchup_pp: "0.5"
-  # Vangnet op de offset tussen hires en de BMS.
-  hires_offset_max: "15"
+  # Diagnosevlag als hires meer dan dit (pp) van de BMS afwijkt; er wordt niet gecorrigeerd.
+  hires_deviation_pp: "10"
+  # Opdrachtvenster (s): elke opdracht geldt zo lang vanaf het schrijven; daarna safe mode
+  # (level, target_grid 0). Gelijk aan de kwartier-cadans van de EMS-strategie (PBI-046).
+  command_window_s: "900"
 
 packages:
   wifi: !include ../wifi.yaml
@@ -68,10 +67,6 @@ ota:
 mdns:
   disabled: false
 
-time:
-  - platform: homeassistant
-    id: ha_time
-
 web_server:
   port: 80
   version: 3
@@ -99,37 +94,35 @@ modbus_controller:
     command_throttle: 750ms
 
 globals:
-  - id: target_soc_deadline_ms
+  # Einde van het opdrachtvenster (millis); 0 = geen venster (safe mode). Zie arm_command.
+  # (millis() + 900s is eens per ~49,7 dagen precies 0: dan geldt die ene ms als safe mode.)
+  - id: cmd_deadline_ms
     type: uint32_t
     restore_value: false
     initial_value: '0'
+  # Laadt de Solis nu via RC Force Charge (43135/43136) i.p.v. RC Grid Adjustment? Zie apply_mode.
+  - id: g_force_charge
+    type: bool
+    restore_value: false
+    initial_value: 'false'
 
 
-  # battery_soc_hires (zie aldaar): coulomb-telling op 33149 die de BMS volgt rond
-  # BMS + offset. g_hires is de stand zelf (pp); de band wordt op de TOESTAND toegepast,
-  # niet alleen op de uitvoer, zodat een weggelopen telling niet bewaard blijft.
+  # battery_soc_hires (zie aldaar): ampère-telling (P/V) die alleen bij de BMS-eindpunten
+  # (100, <= 7) herijkt wordt. g_hires is de stand zelf (pp).
   - id: g_hires
     type: float
     restore_value: false
     initial_value: '0.0'
-  # Geschat verschil tussen echte SOC en de BMS (pp). Ontstaat alleen na een aangetoonde
-  # BMS-stilstand, verdwijnt alleen bij een herijking (100 of <= 7) of als de BMS zelf
-  # bijtrekt. restore_value: anders sprong hires na een herstart midden in een
-  # offsetperiode tot ~10pp terug naar de BMS. Wijzigt alleen bij BMS-stappen, dus
-  # nauwelijks flash-slijtage (ESPHome schrijft alleen bij een echte wijziging).
+  # hires − BMS (pp) op het moment van de laatste BMS-stap. Alleen om hires over een
+  # herstart te bewaren (hires = BMS + g_off bij de eerste melding); geen correctie meer.
+  # Wijzigt alleen bij BMS-stappen, dus weinig flash-slijtage (ESPHome schrijft alleen bij
+  # een echte wijziging).
   - id: g_off
     type: float
     restore_value: true
     initial_value: '0.0'
-  # Energie (pp, + = laden) sinds de laatste BMS-stap — de stilstanddetector.
+  # Energie (pp, + = laden) sinds de laatste BMS-stap — voedt de diagnose bms_stalled.
   - id: g_e_step
-    type: float
-    restore_value: false
-    initial_value: '0.0'
-  # hires direct na de laatste BMS-stap. Tijdens een stilstand telt hires cumulatief
-  # vanaf hier (g_h_step + g_e_step), zodat de energie uit de periode dat hires op de
-  # bandrand vastgepind stond niet verloren gaat.
-  - id: g_h_step
     type: float
     restore_value: false
     initial_value: '0.0'
@@ -229,6 +222,23 @@ sensor:
     icon: "mdi:wifi"
     update_interval: 60s
 
+  # Accuspanning (0,1V) voor de ampère-telling in battery_power_raw (I = P/V). P/V geeft
+  # dezelfde ampères als 33134 maar met 1W- i.p.v. ~41W-resolutie (PBI-044).
+  # register_count 2 sluit aan op 33135: het hoofdblok wordt 33133-33152 in één FC04.
+  - platform: modbus_controller
+    modbus_controller_id: solis
+    id: battery_voltage_raw
+    internal: true
+    register_type: read
+    address: 33133
+    value_type: U_WORD
+    register_count: 2
+    unit_of_measurement: "V"
+    accuracy_decimals: 1
+    skip_updates: 5
+    filters:
+      - multiply: 0.1
+
   # Laad/ontlaad-richting, apart van 33149's magnitude: bleek in de praktijk nodig — 33149
   # levert géén betrouwbaar teken (altijd positieve magnitude, ongeacht richting), ondanks
   # dat de spec het als signed S32 documenteert. 0 = charge, 1 = discharge.
@@ -266,46 +276,36 @@ sensor:
         # BMS ververst SOC onregelmatig (pas bij een echte 1%-sprong); on_value vuurt
         # vaker met dezelfde waarde. Alleen bij een echte wijziging handelen we een stap af.
         #
-        # De BMS blijft op vaste plekken hangen (89-90 bij laden, 19-21 bij ontladen) en
-        # telt daarna gewoon door vanaf de foute stand. Na zo'n stilstand heeft de BMS geen
-        # nieuwe informatie, dus hires wordt dan NIET teruggetrokken: het verschil wordt als
-        # offset vastgehouden tot een herijking (100 of <= 7) of tot de BMS zelf bijtrekt.
+        # v3 (PBI-044, 28-10-2026): tussen de eindpunten volgt hires de BMS niet meer. De
+        # band rond BMS + offset kostte meer dan hij opleverde (22-10: 4,8pp kwijt bij snel
+        # laden en offsetcorrecties); de ampère-telling klopt op ±0,3pp per cyclus. Alleen
+        # bij 100 en <= 7 herijkt de BMS.
         - lambda: |-
             if (id(g_batt_soc_last_raw) != x) {
               const float TOP = ${hires_top_pct}.0f, FLOOR = ${hires_floor_pct}.0f;
               float prev = id(g_batt_soc_last_raw);
               float h = id(g_hires);
-              float off = id(g_off);
               bool endpoint = (x >= TOP || x <= FLOOR);
 
               if (endpoint) {
                 // Herijking: BMS is autoritatief.
-                h = x; off = 0.0f;
+                h = x;
               } else if (prev < 0.0f) {
-                // Eerste melding na opstart: g_off is bewaard over de reboot.
-                h = x + off;
-              } else if (fabsf(id(g_e_step)) > ${hires_stall_pp}f) {
-                // Stilstand eindigt: verschil vasthouden, hires blijft staan.
-                off = std::min(${hires_offset_max}.0f, std::max(-${hires_offset_max}.0f, h - x));
-              } else if (off != 0.0f && fabsf(id(g_e_step)) < ${hires_catchup_pp}f
-                         && fabsf(h - x) < fabsf(h - prev)) {
-                // BMS stapt naar hires toe met minder energie dan een stap verklaart: hij
-                // trekt bij. Verschil krimpt, hires blijft staan. Bij een gewone stap
-                // (~1pp energie) blijft de offset juist gelijk (normale-stap-tak).
-                off = h - x;
-                if (fabsf(off) < ${hires_band_pct}f) off = 0.0f;
-              } else {
-                // Normale stap: bijtrekken tot ±0,5 rond BMS + offset.
-                h = std::min(x + off + ${hires_step_band_pct}f,
-                             std::max(x + off - ${hires_step_band_pct}f, h));
+                // Eerste melding na opstart: g_off (hires − BMS bij de laatste stap) is bewaard.
+                h = x + id(g_off);
+              } else if (prev >= TOP || prev <= FLOOR) {
+                // Weg van een eindpunt (100→99, 7→8): op het eindpunt telde hires niet,
+                // dus midden in de nieuwe stap beginnen.
+                h = (x > prev) ? x - 0.5f : x + 0.5f;
               }
+              // Anders: gewone BMS-stap, hires blijft staan.
+
               // 100 en 7 alleen via de BMS zelf — maar niet na een herijking, anders
               // zou hires bij BMS 100 op 99,9 blijven staan.
               if (!endpoint) h = std::min(TOP - 0.1f, std::max(FLOOR + 0.1f, h));
 
               id(g_hires) = h;
-              id(g_h_step) = h;
-              id(g_off) = off;
+              id(g_off) = h - x;
               id(g_e_step) = 0.0f;
               id(g_batt_soc_last_raw) = x;
             }
@@ -331,35 +331,31 @@ sensor:
             uint32_t now = millis();
             if (id(g_batt_energy_last_ms) != 0 && id(g_batt_soc_last_raw) >= 0.0f) {
               const float TOP = ${hires_top_pct}.0f, FLOOR = ${hires_floor_pct}.0f;
+              const float AH = ${hires_ah}f;
               float dt_h = (now - id(g_batt_energy_last_ms)) / 3600000.0f;
+              // Tellen in ampère (PBI-044): de spanning ligt bij laden hoger (tot 439V) dan bij
+              // ontladen (tot 394V), dus een vaste Wh/pp telde laden te zwaar. Zonder geldige
+              // spanning de nominale (capaciteit/Ah).
+              float v = id(battery_voltage_raw).state;
+              if (std::isnan(v) || v < 300.0f) v = ${battery_capacity_kwh} * 1000.0f / AH;
               // 33149 levert alleen betrouwbaar de magnitude; richting komt uit 33135
-              // (0=charge, 1=discharge) — zie battery_direction_raw.
-              float p = fabsf(x);
+              // (0=charge, 1=discharge) — zie battery_direction_raw. Laden × laadfactor:
+              // de Solis weegt ontladen ~1,3% zwaarder dan de BMS-shunt.
+              float i = fabsf(x) / v;
               if (id(battery_direction_raw).has_state() && id(battery_direction_raw).state >= 0.5f) {
-                p = -p;  // discharge
+                i = -i;  // discharge
+              } else {
+                i *= ${hires_chg_factor}f;
               }
-              float dh = p * dt_h / (${battery_capacity_kwh} * 1000.0f) * 100.0f;  // pp
+              float dh = i * dt_h / AH * 100.0f;  // pp
               id(g_e_step) += dh;
 
               float bms = id(g_batt_soc_last_raw);
-              float h;
               if (bms >= TOP || bms <= FLOOR) {
-                h = bms;
-                id(g_off) = 0.0f;
+                id(g_hires) = bms;
               } else {
-                if (fabsf(id(g_e_step)) > ${hires_stall_pp}f) {
-                  // Stilstand: cumulatief vanaf de stand bij de laatste stap, zodat de
-                  // energie uit de vastgepinde periode niet verloren gaat.
-                  h = id(g_h_step) + id(g_e_step);
-                } else {
-                  // Normaal: band rond BMS + offset.
-                  float ref = bms + id(g_off);
-                  h = std::min(ref + ${hires_band_pct}f,
-                               std::max(ref - ${hires_band_pct}f, id(g_hires) + dh));
-                }
-                h = std::min(TOP - 0.1f, std::max(FLOOR + 0.1f, h));
+                id(g_hires) = std::min(TOP - 0.1f, std::max(FLOOR + 0.1f, id(g_hires) + dh));
               }
-              id(g_hires) = h;
             }
             id(g_batt_energy_last_ms) = now;
 
@@ -464,9 +460,29 @@ sensor:
               if (x < -50.0f) return std::string("export");
               return std::string("level");
 
-  # Residual Power — alles achter de meter behalve de accu-AC-poort: huisverbruik minus
-  # Omnik-PV, dus negatief bij PV-overschot. = grid (+ = import) − accupoort (+ = laden),
-  # met grid_port_power in Solis-conventie (+ = export) wordt dat een optelling.
+  # Command Timer — resterende seconden van het opdrachtvenster; 0 = safe mode. Het bestaan
+  # van deze sensor vertelt de EMS-strategie dat de firmware kwartier-opdrachten verwacht.
+  - platform: template
+    id: command_timer
+    name: "Command Timer"
+    icon: "mdi:timer-sand"
+    unit_of_measurement: "s"
+    device_class: duration
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: 10s
+    lambda: |-
+      uint32_t d = id(cmd_deadline_ms);
+      if (d == 0) return 0.0f;
+      int32_t left = (int32_t)(d - millis());
+      return left > 0 ? left / 1000.0f : 0.0f;
+
+  # Residual Power — alles achter de meter behalve de accu: huisverbruik minus Omnik-PV,
+  # dus negatief bij PV-overschot. = grid (+ = import) − accu-DC (+ = laden).
+  # PBI-012 (user 28-10-2026): met het DC-vermogen (33149, teken uit 33135) i.p.v. de
+  # AC-poort (33151) telt het omvormerverlies (omzetting + stand-by) als huislast; de
+  # integraal sluit daarmee aan op residual_energy, en in apply_mode krijgt de accu bij
+  # setpoint = residual + R netto R aan de DC-kant.
   # Vervangt house_load (33147): dat register is U16 en blijft op 0 bij PV-overschot.
   - platform: template
     id: residual_power
@@ -478,21 +494,20 @@ sensor:
     accuracy_decimals: 0
     update_interval: 5s
     lambda: |-
-      if (std::isnan(id(meter_power_raw).state) || std::isnan(id(grid_port_power).state)) return NAN;
-      return id(meter_power_raw).state + id(grid_port_power).state;
+      if (std::isnan(id(meter_power_raw).state) || std::isnan(id(battery_power_raw).state) ||
+          !id(battery_direction_raw).has_state()) return NAN;
+      float b = fabsf(id(battery_power_raw).state);  // magnitude; richting uit 33135 (1 = discharge)
+      return id(meter_power_raw).state + (id(battery_direction_raw).state >= 0.5f ? b : -b);
 
-  # Hoger-resolutie SOC-schatting (v2, 07-10-2026). De coulomb-telling op 33149 volgt de
-  # BMS binnen een band van ±0,9 (bij een stap ±0,5), maar rond BMS + offset i.p.v. rond
-  # de BMS zelf. De state wordt bijgewerkt in battery_power_raw en battery_soc on_value;
-  # deze sensor publiceert alleen. apply_mode gebruikt 'm als soc-bron;
-  # remaining_energy/usable_energy zijn hiervan afgeleid.
+  # Hoger-resolutie SOC-schatting (v3, 28-10-2026, PBI-044). Ampère-telling op P/V
+  # (33149/33133) die tussen de eindpunten los van de BMS loopt. De state wordt bijgewerkt
+  # in battery_power_raw en battery_soc on_value; deze sensor publiceert alleen.
+  # apply_mode gebruikt 'm als soc-bron; remaining_energy/usable_energy zijn hiervan afgeleid.
   #
-  # Waarom een offset: de BMS (Pylontech Force H3, fw 0.1.0.5) blijft op vaste plekken
-  # hangen — bij laden op 89-90% (bekend Pylontech-gedrag, startpunt balancering), bij
-  # ontladen rond 19-21% — soms uren, met tot 2,4 kWh die niet wordt meegeteld. Daarna
-  # telt de BMS door vanaf de foute stand. Vanaf |energie sinds laatste stap| > 1,5pp telt
-  # hires vrij door; bij de volgende stap wordt het verschil als offset vastgehouden.
-  # Zie nexus_control.md voor de analyse en simulatie.
+  # Waarom los van de BMS: de BMS (Pylontech Force H3, fw 0.1.0.5) blijft op vaste plekken
+  # hangen — bij laden op 89-90%, bij ontladen rond 19-21% — soms uren, en telt daarna door
+  # vanaf de foute stand. Tussen de eindpunten heeft hij dus geen betere informatie dan de
+  # telling. Zie nexus_control.md voor de analyse.
   #
   # Bij de eindpunten (100, <= 7) is de BMS autoritatief: daar herijkt hij zelf, en
   # hires kan 100 alleen aanwijzen als de BMS dat zelf meldt (daaronder max 99,9).
@@ -509,7 +524,7 @@ sensor:
       if (id(g_batt_soc_last_raw) < 0.0f) return NAN;
       return id(g_hires);
 
-  # Geschat verschil tussen de echte SOC en de BMS (pp). Alleen ≠ 0 na een stilstand.
+  # Diagnose: hires − BMS (pp), live. Sinds v3 geen correctiegrootheid meer.
   - platform: template
     id: battery_soc_offset
     name: "Battery SOC Offset"
@@ -520,7 +535,7 @@ sensor:
     update_interval: 10s
     lambda: |-
       if (id(g_batt_soc_last_raw) < 0.0f) return NAN;
-      return id(g_off);
+      return id(g_hires) - id(g_batt_soc_last_raw);
 
   # Netstroom per fase (op de "Grid"-locatie geconfigureerde meter, zie meter_type_cfg=0x0105).
   # Stap 1 richting dynamische per-fase-limiet (zie TODO in apply_mode): eerst alleen
@@ -574,6 +589,18 @@ sensor:
     skip_updates: 10
     filters:
       - multiply: 0.01
+    # Tijdens force charge begrenst de Solis het net niet zelf: een fase boven I_LIM_A (25A,
+    # zie apply_mode) direct bijsturen i.p.v. tot 30s te wachten (PBI-058). C is de laatste
+    # in de request, dus A en B zijn dan al ververst.
+    on_value:
+      then:
+        - if:
+            condition:
+              lambda: |-
+                return id(g_force_charge) &&
+                       std::max(x, std::max(id(grid_current_a).state, id(grid_current_b).state)) > 25.0f;
+            then:
+              - script.execute: apply_mode
 
   # Energietellers voor residual_energy — lage prioriteit, elke 60s (skip_updates 59).
   # Accu: Solis-tellers 33161/33165 (U32, 0,01 kWh — gecontroleerd tegen de HA-integratie).
@@ -818,17 +845,18 @@ select:
       - "charge"
       - "discharge"
     optimistic: true
-    restore_value: true
-    initial_option: "hold"
+    # Na een (her)start altijd safe mode (level, target_grid 0): een opdracht van vóór de
+    # herstart is niet meer geldig, de strategie schrijft binnen het kwartier een nieuwe.
+    restore_value: false
+    initial_option: "level"
     on_value:
       then:
-        - script.execute: arm_soc_deadline
+        - script.execute: arm_command
         - script.execute: apply_mode
 
 binary_sensor:
-  # Aan zolang de BMS stilstaat (meer energie sinds de laatste stap dan hires_stall_pp).
-  # Het enige live signaal tijdens een stilstand: battery_soc_offset wordt pas gezet als
-  # de stilstand eindigt.
+  # Diagnose: aan zolang de BMS stilstaat (meer energie sinds de laatste stap dan
+  # hires_stall_pp). Sinds v3 zonder invloed op hires.
   - platform: template
     id: bms_stalled
     name: "BMS Stalled"
@@ -837,6 +865,16 @@ binary_sensor:
       return id(g_batt_soc_last_raw) >= ${hires_floor_pct}.0f + 1.0f
           && id(g_batt_soc_last_raw) <= ${hires_top_pct}.0f - 1.0f
           && fabsf(id(g_e_step)) > ${hires_stall_pp}f;
+
+  # Diagnose (PBI-044): hires wijkt meer dan hires_deviation_pp van de BMS af. Er wordt niet
+  # gecorrigeerd; een aanhoudende vlag wijst op een fout in de telling of de BMS.
+  - platform: template
+    id: hires_deviation
+    name: "SOC HiRes Deviation"
+    icon: "mdi:battery-unknown"
+    lambda: |-
+      return id(g_batt_soc_last_raw) >= 0.0f
+          && fabsf(id(g_hires) - id(g_batt_soc_last_raw)) > ${hires_deviation_pp}.0f;
 
 text_sensor:
   - platform: template
@@ -870,10 +908,11 @@ number:
     step: 100
     mode: box
     optimistic: true
-    restore_value: true
+    restore_value: false   # na een (her)start: safe mode, zie control_mode
     initial_value: 0
     on_value:
       then:
+        - script.execute: arm_command
         - script.execute: apply_mode
 
   - platform: template
@@ -890,7 +929,7 @@ number:
     initial_value: 80
     on_value:
       then:
-        - script.execute: arm_soc_deadline
+        - script.execute: arm_command
         - script.execute: apply_mode
 
   # ── Modbus holding registers ─────────────────────────────────────────────────
@@ -1067,20 +1106,36 @@ interval:
       - script.execute: publish_grid_metrics
 
 script:
-  - id: arm_soc_deadline
+  # Opdrachtvenster (PBI-046, 22-10-2026): elke schrijfactie van control_mode, target_soc of
+  # target_grid opent een venster van ${command_window_s}s vanaf nu — ook bij een ongewijzigde
+  # waarde (on_value vuurt bij elke publish). De strategie herhaalt de opdracht elk kwartier.
+  # Zelfde patroon als de auto-off in aqua-heatpump.yaml: mode restart + delay, elke opdracht
+  # start de timer opnieuw. Na afloop zet arm_command alleen de Nexus-entiteiten op safe mode
+  # (level, target_grid 0); apply_mode geeft daarop de Solis vrij naar self-use.
+  # Safe mode zelf krijgt geen venster (cmd_deadline_ms = 0, geen delay): anders zou de terugval
+  # via on_value zichzelf opnieuw armen en elke 15 min herhalen. cmd_deadline_ms is er voor de
+  # resttijd in apply_mode en command_timer.
+  - id: arm_command
+    mode: restart
     then:
-      - lambda: |-
-          auto t = id(ha_time).now();
-          if (t.is_valid()) {
-            uint32_t into_hour   = (uint32_t)t.minute * 60 + (uint32_t)t.second;
-            uint32_t to_boundary = 3600 - into_hour;
-            id(target_soc_deadline_ms) = millis() + to_boundary * 1000UL;
-            ESP_LOGI("nexus", "Charge SOC target deadline gearmd: over %u s", to_boundary);
-          } else {
-            // Geen geldige kloktijd (bv. net opgestart) — val terug op oud gedrag.
-            id(target_soc_deadline_ms) = millis() + 3600000UL;
-            ESP_LOGW("nexus", "Geen geldige systeem tijd — fallback charge deadline nu+1u");
-          }
+      - if:
+          condition:
+            lambda: 'return id(ems_mode_select).current_option() == "level" && id(target_grid_number).state == 0.0f;'
+          then:
+            lambda: 'id(cmd_deadline_ms) = 0;'
+          else:
+            - lambda: 'id(cmd_deadline_ms) = millis() + ${command_window_s}UL * 1000UL;'
+            - delay: ${command_window_s}s
+            # Eén lambda: de schrijfacties starten via on_value arm_command opnieuw (restart), en
+            # dat annuleert de acties ná de lopende — binnen een lambda loopt alles door.
+            # target_grid eerst stil op 0, zodat al de eerste on_value (van de mode) safe mode ziet:
+            # geen nieuw venster en geen tussentijdse schrijfactie naar de Solis. De publish daarna
+            # werkt HA bij; die on_value ziet ook safe mode en doet niets meer.
+            - lambda: |-
+                ESP_LOGW("nexus", "Command timer verlopen → returning to safe mode");
+                id(target_grid_number).state = 0.0f;
+                id(ems_mode_select).make_call().set_option("level").perform();
+                id(target_grid_number).publish_state(0.0f);
 
   # Eén script voor alle modes. hold is de enige echte uitzondering (ander Solis-mechanisme,
   # Force Charge i.p.v. RC Grid Adjustment) en moet altijd onvoorwaardelijk herbevestigd
@@ -1100,16 +1155,11 @@ script:
           std::string mode = id(ems_mode_select).current_option();
 
           if (mode == "hold") {
-            id(target_soc_deadline_ms) = 0;
+            id(g_force_charge) = false;
             write_reg(id(rc_charge_power_reg), 0);
             write_reg(id(rc_force_mode_reg), 1);
             ESP_LOGI("nexus", "Hold mode");
             return;
-          }
-
-          // Deadline is alleen relevant voor charge/discharge
-          if (mode != "charge" && mode != "discharge") {
-            id(target_soc_deadline_ms) = 0;
           }
 
           const float BATTERY_WH  = ${battery_capacity_kwh} * 1000.0f;
@@ -1128,6 +1178,12 @@ script:
           // (19-10 15:00: 81,7% tegen doel 82,3%).
           const uint32_t RATE_FLOOR_MS = 30000UL;
           const float RC_THRESHOLD_W = 100.0f;  // te kleine setpoints zijn RC-adjustment niet waard
+          // Force charge (PBI-058): RC Grid Adjustment begrenst het net op 10kW, dus huislast gaat
+          // daar van het laden af. Boven FORCE_ON_W (residual + R) laden via RC Force Charge
+          // (43135/43136), terug onder FORCE_OFF_W (hysterese, user 28-10).
+          const float FORCE_ON_W   = 8000.0f;
+          const float FORCE_OFF_W  = 5000.0f;
+          const float MAX_CHARGE_W = 10000.0f;  // omvormer; 43136 max 1000 x 10W
 
           float tgt_w      = id(target_grid_number).state;
           float tgt_soc    = id(target_soc_number).state;
@@ -1137,6 +1193,8 @@ script:
           float i_max      = NAN;     // zwaarste fase
           float phase_cap  = NAN;     // setpoint-grens door de fasestroom
           float soc        = -1.0f;
+          bool  force      = false;   // deze ronde laden via RC Force Charge
+          float force_w    = 0.0f;
 
           if (mode == "charge" || mode == "discharge") {
             // Hoger-resolutie SOC via battery_soc_hires i.p.v. de ruwe 1%-stappen van de BMS.
@@ -1148,8 +1206,9 @@ script:
               soc = id(battery_soc).state;
             }
 
-            // Opdracht = target_soc halen vóór het eerstvolgende hele uur, met de waarden van
-            // nu (18-10-2026). Geen PV-voorspelling en geen buffer: PV die er nu is telt mee via
+            // Opdracht = target_soc halen vóór het einde van het opdrachtvenster (15 min, PBI-046;
+            // tot 22-10 het hele uur), met de waarden van nu. Geen PV-voorspelling en geen
+            // buffer: PV die er nu is telt mee via
             // residual_power; verwachte PV en reserve zijn aan het EMS, dat target_soc zo vaak
             // kan bijstellen als het wil.
             //
@@ -1161,9 +1220,10 @@ script:
             bool not_past_target = (mode == "charge") ? (soc <= tgt_soc) : (soc >= tgt_soc);
             if (soc >= 0.5f && not_past_target) {
               float need_pct = (mode == "charge") ? (tgt_soc - soc) : (soc - tgt_soc);
-              uint32_t now = millis();
-              uint32_t rate_deadline = std::max(id(target_soc_deadline_ms), now + RATE_FLOOR_MS);
-              float remaining = (rate_deadline - now) / 3600000.0f;
+              // Resttijd van het opdrachtvenster (verschil als int32: bestand tegen de
+              // millis()-overloop na 49,7 dagen), met de vloer van één ronde.
+              int32_t left_ms = (int32_t)(id(cmd_deadline_ms) - millis());
+              float remaining = std::max(left_ms, (int32_t)RATE_FLOOR_MS) / 3600000.0f;
               rate_w = (need_pct / 100.0f) * BATTERY_WH / remaining;
 
               // Huislast-term: setpoint = residual ± R, zodat huislast (EV-lader, WP) het laden
@@ -1190,7 +1250,30 @@ script:
               // ontladen hooguit tgt_w (bij PV-overschot dus nooit export tijdens charge).
               if (mode == "charge")    adjusted_w = std::max(tgt_w, std::min(want_w, cap_w));
               if (mode == "discharge") adjusted_w = std::min(tgt_w, std::max(want_w, cap_w));
+
+              // Force charge alleen met bekende fasestroom: de Solis begrenst het net dan niet
+              // zelf, dus net = residual + laadvermogen moet onder phase_cap blijven. residual
+              // bevat het laadvermogen niet (DC-zijde, PBI-012), dus geen terugkoppeling.
+              if (mode == "charge" && !std::isnan(phase_cap)) {
+                force = id(g_force_charge) ? (want_w >= FORCE_OFF_W) : (want_w > FORCE_ON_W);
+                if (force) force_w = std::max(0.0f, std::min(rate_w, std::min(MAX_CHARGE_W, phase_cap - res)));
+              }
             }
+          }
+
+          // Uit force charge: 43135 expliciet uit. 43132 = 1 zet force in de Solis ook uit, maar
+          // onder RC_THRESHOLD_W wordt 43132 niet geschreven en liep force door tot de RC-timeout.
+          if (id(g_force_charge) && !force) write_reg(id(rc_force_mode_reg), 0);
+          id(g_force_charge) = force;
+
+          if (force) {
+            // Zoals hold: 43132/43133 niet aanraken (43132 = 1 zet force uit). Elke ronde
+            // herschrijven houdt force binnen de RC-timeout (43282) levend.
+            write_reg(id(rc_charge_power_reg), roundf(force_w / 10.0f));
+            write_reg(id(rc_force_mode_reg), 1);
+            ESP_LOGI("nexus", "charge FORCE P=%.0fW R=%.0fW res=%.0fW soc=%.1f%%/%.1f%% imax=%.1fA cap=%.0fW",
+                      force_w, rate_w, res_w, soc, tgt_soc, i_max, phase_cap);
+            return;
           }
 
           // 43133 convention is inverse of HA: positive = export, negative = import.

@@ -46,7 +46,7 @@ Setpoint in register 43133: `sp = -(int16_t)(tgt_w / 10)` (huis → Solis conven
 
 ### Read registers (function code 0x04)
 
-Gelezen als één FC04-request over het blok 33135–33152.
+Gelezen als één FC04-request over het blok 33133–33152 (sinds 28-10; daarvoor 33135–33152).
 
 > **Range-opbouw (ESPHome 2026.8)**: de modbus_controller voegt sensoren alleen samen tot één
 > request als hun registers **exact aansluiten** — elk gat, hoe klein ook, geeft een eigen request.
@@ -57,6 +57,7 @@ Gelezen als één FC04-request over het blok 33135–33152.
 
 | Register | Type | Eenheid | Naam | Noot |
 |---|---|---|---|---|
+| 33133 | U16 | 0.1V | Battery voltage | Voor de ampère-telling van `battery_soc_hires` (I = P/V); `register_count: 2` |
 | 33135 | U16 | — | Battery current direction | `0`=charge, `1`=discharge — autoritatieve richting voor 33149 (zie hierboven); `register_count: 4` |
 | 33139 | U16 | 1% | Battery SOC | 0–100%; `on_value` her-ankert de coulomb-counting bij een echte wijziging; `register_count: 10` (t/m 33148) |
 | 33147 | U16 | 1W | House load power | **Niet gebruikt** — U16, blijft op 0 bij PV-overschot (Omnik). Vervangen door `residual_power` |
@@ -98,8 +99,8 @@ Apart FC04-request (los register, elke 15 min) voor de overdischarge-ondergrens 
 | 43110 | U16 | — | Storage control switch | **33** = Self-Use + Allow Grid Charge | elke 5 min, alleen bij afwijking |
 | 43132 | U16 | — | RC Grid Adjustment ON/OFF | 0=OFF, **1=ON** | elke 30s, **alleen** als `\|adjusted_w\| > RC_THRESHOLD_W` (100W) — zie [apply_mode](#modi) |
 | 43133 | S16 | 10W | RC Grid Active Power setpoint | Solis-conv: + = export, − = import | elke 30s, **onvoorwaardelijk** (alle modes behalve hold) |
-| 43135 | U16 | — | RC Force Charge/Discharge | 0=OFF, **1**=Force Charge | alleen geschreven in `hold` (→1) |
-| 43136 | U16 | 10W | RC Force Charge Power | — | alleen geschreven in `hold` (→0) |
+| 43135 | U16 | — | RC Force Charge/Discharge | 0=OFF, **1**=Force Charge | `hold` (→1) en force charge (→1 elke 30s, →0 bij verlaten), zie [Force charge](#force-charge-boven-8-kw-pbi-058-28-10-2026) |
+| 43136 | U16 | 10W | RC Force Charge Power | — | `hold` (→0) en force charge (→ force_w/10) |
 | 43140 | U16 | — | Meter1 type & location | **0x0105** = Standard Eastron 3Ph, Grid | elke 5 min, alleen bij afwijking |
 | 43282 | U16 | 1min | RC Timeout | Geldig bereik 2–30; **schrijf 2** (minimum) | elke 5 min, onvoorwaardelijk |
 
@@ -129,21 +130,23 @@ Wordt als vaste waarde **33** geschreven (geen read-modify-write):
 
 | Entiteit | Type | Beschrijving |
 |---|---|---|
-| `select.control_mode` | select | Mode: hold / level / charge / discharge, `optimistic`, `restore_value` |
-| `number.target_grid_power` | number | Doelvermogen in W (huis-conv), −10000…10000, stap 100 |
+| `select.control_mode` | select | Mode: hold / level / charge / discharge, `optimistic`; **geen** `restore_value`: na een (her)start altijd `level` (safe mode) |
+| `number.target_grid_power` | number | Doelvermogen in W (huis-conv), −10000…10000, stap 100; na een (her)start 0 (safe mode) |
+| `sensor.command_timer` | sensor | Resterende seconden van het opdrachtvenster (10s); 0 = safe mode — zie [Opdrachtvenster](#opdrachtvenster-15-min-en-safe-mode-pbi-046). Het bestaan van de sensor vertelt de EMS-strategie dat de firmware kwartier-opdrachten verwacht |
 | `number.target_soc` | number | Doel-SOC in %, 7…100, stap 0,1 (EMS rekent met 1 decimaal), default 80 — alleen relevant in charge/discharge |
 | `sensor.battery_capacity` | sensor | Accucapaciteit in kWh — **vaste** waarde (20.48) uit `substitutions`, alleen gepubliceerd ter inzage; geen HA-input meer, zie [Energieboekhouding](#energieboekhouding--capaciteit-baseremainingusabletarget_usable) |
 | `sensor.battery_soc` | sensor | SOC %, ruwe BMS-waarde (1%-resolutie, onregelmatige update) |
-| `sensor.battery_soc_hires` | sensor | Hoger-resolutie SOC-schatting (2 decimalen, 10s): volgt BMS + offset binnen ±0,9pp, telt vrij tijdens een BMS-stilstand; telling staat uit bij SOC 100 en ≤ 7 (daartussen max 99,9), zie [Hoge-resolutie SOC](#hoge-resolutie-soc--coulomb-counting-tussen-bms-updates) |
-| `sensor.battery_soc_offset` | sensor | Geschat verschil echte SOC − BMS in pp; ≠ 0 alleen na een BMS-stilstand, overleeft een herstart |
-| `binary_sensor.bms_stalled` | binary | Aan tijdens een BMS-stilstand (> 1,5pp energie sinds de laatste BMS-stap) |
+| `sensor.battery_soc_hires` | sensor | Hoger-resolutie SOC-schatting (2 decimalen, 10s): ampère-telling (P/V) los van de BMS; telling staat uit bij SOC 100 en ≤ 7 (daartussen 7,1 … 99,9), zie [Hoge-resolutie SOC](#hoge-resolutie-soc--coulomb-counting-tussen-bms-updates) |
+| `sensor.battery_soc_offset` | sensor | Diagnose: hires − BMS in pp |
+| `binary_sensor.bms_stalled` | binary | Diagnose: aan tijdens een BMS-stilstand (> 1,5pp energie sinds de laatste BMS-stap) |
+| `binary_sensor.soc_hires_deviation` | binary | Diagnose: aan bij \|hires − BMS\| > 10pp |
 | `sensor.base_energy` | sensor | Energie onder de overdischarge-ondergrens (kWh), niet bruikbaar — zie [Energieboekhouding](#energieboekhouding--capaciteit-baseremainingusabletarget_usable) |
 | `sensor.remaining_energy` | sensor | Totale accu-inhoud in kWh, afgeleid van `battery_soc_hires` — zie [Energieboekhouding](#energieboekhouding--capaciteit-baseremainingusabletarget_usable) |
 | `sensor.usable_energy` | sensor | `remaining_energy − base_energy` (kWh) — zie [Energieboekhouding](#energieboekhouding--capaciteit-baseremainingusabletarget_usable) |
 | `sensor.target_usable_energy` | sensor | `target_soc` uitgedrukt in kWh boven de ondergrens; observationeel, nog niet in `apply_mode` verwerkt — zie [Energieboekhouding](#energieboekhouding--capaciteit-baseremainingusabletarget_usable) |
 | `sensor.grid_power` | sensor | Netmeter W (huis-conv: + = import), 5s, HA-visible |
 | `sensor.inverter_power` | sensor | AC grid port W (Solis-conv: + = export) |
-| `sensor.residual_power` | sensor | Huislast minus Omnik-PV (W), = grid − accu-AC-poort; negatief bij PV-overschot, 5s — zie [Residual power en energie](#residual-power-en-energie) |
+| `sensor.residual_power` | sensor | Huislast + omvormerverlies minus PV (W), = grid − accu-DC; negatief bij PV-overschot, 5s — zie [Residual power en energie](#residual-power-en-energie) |
 | `sensor.residual_energy` | sensor | Tweezijdige teller (kWh, `state_class: total`) bij `residual_power`, 60s |
 | `sensor.grid_current_a/b/c` | sensor | Netstroom per fase (A), 0.01A-resolutie, ~10s, zie [Netstroom per fase](#netstroom-per-fase-grid_current_ab_c) |
 | `text_sensor.inverter_status` | text | `charging` / `discharging` / `standby`, afgeleid van `inverter_power` (drempel ±150W) |
@@ -159,10 +162,10 @@ Er is geen `binary_sensor.fault` of `binary_sensor.grid_meter_connected` — fou
 Eén script, `apply_mode`, dekt alle vier de modes — geen apart `update_soc_setpoint` meer. Aangeroepen bij elke mode-/target-wijziging (`on_value`) én elke **30s** via `interval`.
 
 ### hold
-Enige echte uitzondering: ander Solis-mechanisme (Force Charge i.p.v. RC Grid Adjustment), en moet **onvoorwaardelijk** herbevestigd worden — self-use is precies wat `hold` wil vóórkomen. Schrijft `43136=0` (RC Force Charge Power) en `43135=1` (Force Charge aan, op 0W), zet `target_soc_deadline_ms` op 0, en stopt (`return`) vóór de rest van het script. `43132`/`43133` worden in `hold` niet aangeraakt.
+Enige echte uitzondering: ander Solis-mechanisme (Force Charge i.p.v. RC Grid Adjustment), en moet **onvoorwaardelijk** herbevestigd worden — self-use is precies wat `hold` wil vóórkomen. Schrijft `43136=0` (RC Force Charge Power) en `43135=1` (Force Charge aan, op 0W), en stopt (`return`) vóór de rest van het script. Valt net als elke andere opdracht na 900s terug naar safe mode; force charge verloopt daarna via de RC-timeout (2 min). Een nieuwe opdracht die 43132 = 1 schrijft, zet force in de Solis zelf meteen uit (43135 → 0) — de firmware hoeft 43135 daarvoor niet te schrijven. `43132`/`43133` worden in `hold` niet aangeraakt.
 
 ### level / charge / discharge
-Gedeeld mechanisme via RC Grid Adjustment (43132/43133) — er is **geen** apart Force Charge/Discharge-pad voor `charge`/`discharge`. `43135`/`43136` worden hier nooit geschreven.
+Gedeeld mechanisme via RC Grid Adjustment (43132/43133). Uitzondering sinds 28-10: `charge` boven 8 kW (residual + R) loopt via RC Force Charge (43135/43136), zie [Force charge](#force-charge-boven-8-kw-pbi-058-28-10-2026).
 
 - `level`: `adjusted_w = target_grid_w`
 - `charge` / `discharge`: `adjusted_w` volgt uit de SOC-deadline-sturing hieronder (huislast-term + benodigd accuvermogen)
@@ -180,7 +183,7 @@ Vervolgens, voor alle drie de modes identiek:
 
 ## SOC-deadline sturing (charge / discharge)
 
-**Opdracht**: `target_soc` halen vóór het eerstvolgende hele uur, met de waarden van nu. De firmware
+**Opdracht**: `target_soc` halen vóór het einde van het opdrachtvenster (15 min, zie [Opdrachtvenster](#opdrachtvenster-15-min-en-safe-mode-pbi-046)), met de waarden van nu. De firmware
 voorspelt geen PV en bouwt geen buffer in: verwachte PV en reserve(kwartieren) zijn aan het EMS, dat
 `target_soc` zo vaak kan bijstellen als het wil (sinds 18-10-2026, zie [Geschiedenis](#geschiedenis-pv-marge-en-anker-tot-18-10-2026)).
 
@@ -194,7 +197,7 @@ RATE_FLOOR_MS = 30000     # ondergrens op de deler: één apply_mode-ronde (was 
 not_past_target = soc <= target_soc      # charge   (discharge: soc >= target_soc)
 if soc geldig and not_past_target:
     need_pct  = target_soc − soc         # charge   (discharge: soc − target_soc); 0 op het doel
-    remaining = max(deadline, now + RATE_FLOOR_MS) − now
+    remaining = max(cmd_deadline − now, RATE_FLOOR_MS)           # int32-verschil, overloop-bestendig
     R         = need_pct/100 · BATTERY_WH / remaining          # benodigd accuvermogen
     want      = residual_power + R       # charge   (discharge: residual_power − R)
     cap       = +MAX_GRID_W              # charge   (discharge: −MAX_GRID_W)
@@ -227,6 +230,35 @@ else:
 - **Log**: `charge tgt=… R=… res=… adj=… sp=… soc=…/… imax=…A cap=…W rc=…` (imax/cap NAN zonder
   fasestroom, R/res 0/NAN voorbij het doel).
 
+### Force charge boven 8 kW (PBI-058, 28-10-2026)
+
+RC Grid Adjustment (43133) begrenst het **net** op ±10 kW. Bij een groot SOC-gat en veel huislast (WP,
+EV-lader, wasmachine) gaat de huislast daardoor van het laden af, terwijl de aansluiting (3×25A) nog
+ruimte heeft. Daarom laadt `charge` boven een drempel via RC Force Charge (43135 = 1, 43136 = vermogen),
+waar de Solis een vast **accuvermogen** aanhoudt en het net de rest levert.
+
+```
+want    = residual + R                              # zoals hierboven
+force   = want > 8000          (was force: want >= 5000)    # hysterese, user 28-10
+          alleen in charge, vóór het doel, en met bekende fasestroom (phase_cap ≠ NAN)
+force_w = clamp(min(R, 10000, phase_cap − residual), ≥ 0)
+force:  43136 = force_w/10 ; 43135 = 1 ; 43132/43133 niet schrijven ; return
+uit:    43135 = 0 (eenmalig), daarna het gewone RC-pad
+```
+
+- **Fasegrens zelf bewaken**: in force begrenst de Solis het net niet. `phase_cap − residual` is het
+  laadvermogen waarbij de zwaarste fase op 25 A uitkomt (net = residual + laadvermogen; `residual` bevat
+  sinds PBI-012 het laadvermogen niet, dus geen terugkoppeling). Naast de 30s-ronde draait `apply_mode`
+  ook direct na elke fasestroom-read (~11s) als een fase tijdens force boven 25 A zit.
+- **43132/43133 niet aanraken in force**: 43132 = 1 zet force in de Solis uit (zie hold). Elke ronde
+  43136 + 43135 herschrijven houdt force binnen de RC-timeout (2 min) levend; valt de firmware weg, dan
+  stopt force vanzelf.
+- **Uit force: 43135 = 0 expliciet.** Zonder dat liep force bij een setpoint onder `RC_THRESHOLD_W`
+  (geen 43132-schrijfactie) door tot de RC-timeout. Geldt ook bij de terugval naar safe mode.
+- Geen export: force alleen bij want ≥ 5 kW en force_w ≤ R, dus net = residual + force_w > 0.
+- **Te verifiëren bij het eerste force-blok** (log `charge FORCE P=… R=… res=… imax=… cap=…`): accu laadt
+  ~force_w, net ≈ residual + force_w, wissel RC → force zonder onderbreking van het laden, en terug.
+
 ### Simulatie (18-10-2026)
 
 Port van oude en nieuwe rekensom, 30s-stappen, residual uit de 5-minutengemiddelden in HA, accu tot
@@ -243,15 +275,50 @@ verschillen oud en nieuw weinig. Het knelpunt is het afknijpen door de BMS boven
 zelfs een heel uur vol vermogen de 99 niet. Zo'n doel moet het EMS eerder inplannen. Het nieuwe gedrag
 wint vooral als er géén PV is (de oude marge trok dan toch 9pp af) en bij huislast op het plafond.
 
-### De deadline: eerstvolgend wandklok-uur, geen relatieve reset
+### Opdrachtvenster 15 min en safe mode (PBI-046)
 
-`target_soc_deadline_ms` wordt gearmd via het `arm_soc_deadline` script, dat het **eerstvolgende hele wandklok-uur** pakt (via de `time:`-component `ha_time`, gevoed door de HA-API — geen extra hardware/NTP nodig). Is er nog geen geldige kloktijd (bv. net opgestart), dan valt de firmware terug op now + 1 uur.
+Sinds 22-10-2026 is elke opdracht een **kwartieropdracht**, gelijk aan de EPEX-kwartierprijzen en de
+strategie-run die elk kwartier draait (tot 22-10: het eerstvolgende hele wandklok-uur via `ha_time`).
 
-`arm_soc_deadline` wordt uitgevoerd zodra:
-- de mode wijzigt (`select.control_mode` `on_value`) — geldt voor élke gekozen mode, ook `hold`/`level` (waar `target_soc_deadline_ms` vervolgens meteen weer op 0 wordt gezet door `apply_mode`)
-- `target_soc` wijzigt (`number.target_soc` `on_value`)
+- **Arm**: elke schrijfactie van `select.control_mode`, `number.target_soc` of `number.target_grid_power`
+  opent een venster van `command_window_s` (900s) **vanaf nu** — ook bij een ongewijzigde waarde. In
+  ESPHome 2026.8 roepen `Number::publish_state` en `Select::publish_state` de callback altijd aan, dus
+  `on_value` vuurt bij elke schrijfactie. De controller herhaalt dezelfde opdracht elk kwartier om het
+  venster te verlengen (de write-on-change in `ems_controller.py` moet daarvoor uit).
+- **Safe mode** = `level` met `target_grid` 0, **zonder venster** (`command_timer` 0). Daarvoor was
+  `apply_mode` al ingericht: setpoint 0, 43132 wordt onder `RC_THRESHOLD_W` niet herbevestigd, en de
+  Solis valt via zijn RC-timeout (≤ 2 min) terug op zijn eigen self-use. `apply_mode` is voor PBI-046
+  niet gewijzigd, behalve dat R met de resttijd van het venster rekent.
+- **Terugval**: na 900s zonder nieuwe opdracht zet `arm_command` de Nexus-entiteiten op safe mode
+  (`target_grid` 0, `control_mode` `level`) — een zichtbare state-wijziging in HA, met
+  `ESP_LOGW("Command timer verlopen → returning to safe mode")`. Geldt voor `charge`, `discharge`, `hold` en `level` met
+  `target_grid` ≠ 0. De Solis-kant doet `apply_mode` (via de `on_value` van die schrijfacties).
+- **Geen lus**: safe mode zelf armt geen venster. Anders zou de terugval via `on_value` zichzelf opnieuw
+  armen en elke 15 min herhalen — daarom de `if` in `arm_command`.
+- **Na een (her)start**: altijd safe mode (`control_mode` en `target_grid` zonder `restore_value`).
+- **R** rekent met de resttijd van hetzelfde venster (900s), met de vloer van 30s (`RATE_FLOOR_MS`).
 
-Daarna telt de deadline af in kloktijd; de 30s-interval (`apply_mode`) reset hem niet. Zodra de deadline binnen 30s ligt (`RATE_FLOOR_MS`, één `apply_mode`-ronde), klemt de deler vast op 30s — de sturing blijft dan maximaal duwen tot het doel gehaald is of `target_soc`/mode opnieuw wordt ingesteld.
+Implementatie, zelfde patroon als de auto-off in `aqua-heatpump.yaml`. `arm_command` zet alleen de
+Nexus-entiteiten; alles wat naar de Solis gaat doet `apply_mode`:
+
+```
+arm_command (mode: restart)          # vanuit on_value van mode / target_soc / target_grid
+  safe (level, target_grid 0) → cmd_deadline_ms = 0        # geen venster, geen delay
+  anders → cmd_deadline_ms = now + 900s ; delay 900s ; lambda: target_grid := 0 ; control_mode := level
+
+apply_mode (elke 30s en bij elke on_value)   # ongewijzigd; level 0 W → Solis self-use via RC-timeout
+```
+
+De twee schrijfacties staan in **één** lambda: ze starten via `on_value` `arm_command` opnieuw
+(restart), en dat annuleert de acties ná de lopende — een lambda die al loopt maakt zijn werk af.
+`target_grid` wordt eerst stil op 0 gezet (`state = 0`, nog geen `on_value`), daarna de mode via een
+call, en pas dan `publish_state(0)` voor HA. Zo ziet al de eerste `on_value` safe mode: geen nieuw
+venster en geen tussentijdse schrijfactie naar de Solis (met `set_value(0)` eerst zou de mode nog
+`charge` zijn en arm_command kort een nieuw venster openen).
+
+**Synchronisatie met de strategie**: bestaat `sensor.nexus_control_command_timer`, dan stuurt de
+strategie kwartier-tussendoelen; zo niet, dan uur-doelen. Flashen en de strategie hoeven daardoor niet
+tegelijk.
 
 > **19-10-2026: vloer van 2 min naar 30s.** Met 2 min werd in de laatste 2 minuten elke ronde het restant
 > opnieuw door "nog 2 min" gedeeld: het vermogen zakte per ronde ~25% (14:58 → 15:00: 9,0 → 7,2 → 5,4 →
@@ -262,7 +329,7 @@ Daarna telt de deadline af in kloktijd; de 30s-interval (`apply_mode`) reset hem
 ### Typisch gebruik
 
 ```
-mode: charge, target_grid: 0W, target_soc: 80%    # laden tot 80% vóór het hele uur, nooit export
+mode: charge, target_grid: 0W, target_soc: 80%    # laden tot 80% binnen 15 min, nooit export
 mode: charge, target_grid: 0W, target_soc: = SOC   # accu vasthouden, EV/huis vanuit het net
 ```
 
@@ -286,9 +353,55 @@ een hold op het doel zodra het gehaald is.
 echt naar een nieuwe 1%-stap springt, niet op een vaste klok. Voor een sturing die elke 30s bijstuurt is
 dat te grof en te traag.
 
-### Aanpak (v2, 07-10-2026): BMS volgen rond BMS + offset
+### Aanpak (v3, 28-10-2026, PBI-044): tellen in ampère, los van de BMS
 
-`hires` volgt de BMS binnen een band, maar rond **BMS + offset** in plaats van rond de BMS zelf. De offset
+```
+substitutions:  hires_top_pct 100, hires_floor_pct 7, hires_ah 50.5, hires_chg_factor 1.013,
+                hires_stall_pp 1.5 (diagnose), hires_deviation_pp 10 (diagnose)
+globals:        g_hires (pp), g_off (hires − BMS bij de laatste stap, restore_value), g_e_step (diagnose)
+
+battery_power_raw (33149) on_value:
+  V  = 33133 (0,1V; zonder geldige waarde capaciteit/Ah = 405,5V)
+  I  = |P| / V ; ontladen (33135 = 1): −I ; laden: I × 1,013
+  dh = I · dt / 50,5Ah · 100 ; g_e_step += dh
+  als bms >= 100 of bms <= 7: hires = bms
+  anders:                     hires = clamp(hires + dh, 7.1, 99.9)
+
+battery_soc (33139) on_value, bij een echte wijziging prev → x:
+  als x >= 100 of x <= 7:          hires = x                          # herijking
+  anders als geen prev (opstart):  hires = x + g_off                  # bewaard over de reboot
+  anders als prev was eindpunt:    hires = x ∓ 0,5                    # 100→99: 99,5 ; 7→8: 7,5
+  anders:                          hires blijft staan                 # gewone stap
+  hires = clamp(hires, 7.1, 99.9) — niet na een herijking
+  g_off = hires − x ; g_e_step = 0
+```
+
+Waarom (analyse EMS health 22-10, zie issue #44): over drie ijkpuntparen (BMS 7/100) 15-10..22-10 eindigde
+tellen in watt +1,6..+2,5 pp naast het ijkpunt — de accuspanning ligt bij laden hoger (tot 439V) dan bij
+ontladen (tot 394V), dus een vaste 204,8 Wh/pp telt laden te zwaar. P/V met laadfactor 1,013 en 50,5 Ah
+kwam op ±0,1 pp (rms 0,06; 2 parameters op 3 punten — opnieuw toetsen bij meer ijkpunten). 33134
+(stroom, 0,1A ≈ 41W) is bij nachtverbruik te grof; P/V geeft dezelfde ampères met 1W-resolutie. De band
+rond BMS + offset (v2) kostte op 20/21-10 4,8 pp: snel laden (hires in de band rond een trage BMS),
+bijtrekken na de 89%-stilstand en offset-slijtage.
+
+- **Geen band, geen offsetcorrectie meer**: tussen de eindpunten heeft de BMS geen betere informatie dan
+  de telling. `battery_soc_offset` en `bms_stalled` blijven als diagnose (entity-ID's ongewijzigd);
+  `battery_soc_offset` is nu live `hires − BMS`.
+- **`binary_sensor.soc_hires_deviation`** (nieuw): aan bij |hires − BMS| > 10 pp. Alleen een vlag, geen
+  correctie.
+- **Vloer 7,1 / plafond 99,9 blijven** (les van 05-09, zie hieronder).
+- **Weg van een eindpunt** begint hires midden in de nieuwe stap: op het eindpunt telt hires niet, dus
+  zonder deze regel bleef hires na 7→8 op 7 staan (en na 100→99 op 100 → 99,9).
+- `g_off` wordt alleen bij een BMS-stap geschreven (flash), niet bij elke telling.
+- Spanning, richting en vermogen komen uit hetzelfde FC04-blok (33133–33152); `register_count: 2` op
+  33133 sluit aan op 33135.
+
+Verificatie na de flash: per nieuw ijkpuntpaar de eindstand van hires (zonder vloer/plafond) tegen 7/100 —
+verwacht binnen ±1 pp (health-sessie).
+
+### Vorige aanpak (v2, 07-10 t/m 28-10-2026): BMS volgen rond BMS + offset
+
+`hires` volgde de BMS binnen een band, maar rond **BMS + offset** in plaats van rond de BMS zelf. De offset
 ontstaat alleen bij een aangetoonde BMS-stilstand en verdwijnt alleen bij een herijking (BMS 100 of ≤ 7) of
 als de BMS zelf bijtrekt. De band zit op de **toestand** (`g_hires`), niet alleen op de uitvoer — een
 weggelopen telling kan dus niet ongemerkt bewaard blijven.
@@ -433,9 +546,10 @@ implementatie doet nu hetzelfde: `fabs()` van de magnitude, teken expliciet uit 
 
 | Entiteit | Type | Resolutie | Noot |
 |---|---|---|---|
-| `sensor.battery_soc_hires` | sensor | 0.01%, elke 10s | `NAN` zolang er nog geen BMS-melding is geweest; volgt BMS + offset binnen ±0,9pp, telt vrij tijdens een BMS-stilstand. Bij SOC 100 en ≤ 7 exact de BMS-waarde, daartussen [7,1 … 99,9] |
-| `sensor.battery_soc_offset` | sensor | 0.01pp, elke 10s | Geschat verschil echte SOC − BMS (`g_off`). Alleen ≠ 0 na een stilstand; wordt pas gezet als de stilstand *eindigt*. Overleeft een herstart |
-| `binary_sensor.bms_stalled` | binary | live | Aan zolang er sinds de laatste BMS-stap meer dan 1,5pp energie is gestroomd — het enige live signaal tijdens een stilstand |
+| `sensor.battery_soc_hires` | sensor | 0.01%, elke 10s | `NAN` zolang er nog geen BMS-melding is geweest; ampère-telling los van de BMS (v3). Bij SOC 100 en ≤ 7 exact de BMS-waarde, daartussen [7,1 … 99,9] |
+| `sensor.battery_soc_offset` | sensor | 0.01pp, elke 10s | Diagnose: live `hires − BMS` |
+| `binary_sensor.bms_stalled` | binary | live | Diagnose: aan zolang er sinds de laatste BMS-stap meer dan 1,5pp energie is gestroomd |
+| `binary_sensor.soc_hires_deviation` | binary | live | Diagnose: aan bij \|hires − BMS\| > 10pp |
 
 ---
 
@@ -499,15 +613,24 @@ weergave voor toekomstig gebruik.
 
 ## Residual power en energie
 
-`residual_power` is alles achter de meter behalve de accu-AC-poort: huisverbruik (incl. EV-lader en
-warmtepomp) minus de PV. Alle PV is AC-gekoppeld (APsystems en Omnik); aan de Solis zitten **geen**
-PV-strings. Daardoor daalt `residual_energy` alleen bij PV-overschot.
+`residual_power` is alles achter de meter behalve de accu zelf: huisverbruik (incl. EV-lader en
+warmtepomp) plus het omvormerverlies, minus de PV. Alle PV is AC-gekoppeld (APsystems en Omnik); aan de
+Solis zitten **geen** PV-strings. Daardoor daalt `residual_energy` alleen bij PV-overschot.
 
 ```
-residual_power  = grid_power (+ = import) − accupoort (+ = laden)
-                = meter_power_raw + grid_port_power        # 33151 in Solis-conv., + = export
+residual_power  = grid_power (+ = import) − accu-DC (+ = laden)
+                = meter_power_raw ± |33149|                # + bij ontladen, − bij laden (33135)
 residual_energy = import (33283) − export (33285) + discharge (33165) − charge (33161)
 ```
+
+**28-10-2026 (PBI-012): DC i.p.v. AC-poort.** Tot 28-10 was `residual_power = meter_power_raw +
+grid_port_power` (33151, AC-poort). Het omvormerverlies viel daardoor buiten `residual_power`, terwijl
+`residual_energy` het wel bevatte: 18/19-10 12,25 kWh integraal tegen 13,98 kWh teller in 20,8 u
+(~80–100 W). Wens gebruiker: het verlies is huislast. Met het DC-vermogen aan de accuklemmen telt het
+mee (in stand-by bv. 0 W DC tegen −70 W AC op 28-10). Bijeffect in `apply_mode`: setpoint = residual + R
+dekt het laadverlies, zodat de accu aan de DC-kant netto R krijgt. Een kleine zelfkoppeling (het verlies
+hangt van het laadvermogen af) middelt binnen een ronde uit. `sensor.base_power` (HA-template, owner user)
+rekent nog met `nexus_control_inverter_power` (AC) en moet apart mee.
 
 - **Waarom niet 33147** (House load power): U16, kan niet negatief. Bij Omnik-overschot blijft hij op 0
   terwijl de werkelijke residual negatief is. De Solis ziet de Omnik niet als eigen PV.
@@ -516,7 +639,7 @@ residual_energy = import (33283) − export (33285) + discharge (33165) − char
 - **Meetzijde accutellers**: 33161/33165 zitten iets boven de BMS-DC-teller (18-10: Solis 12,88 kWh
   geladen tegen Pylontech 12,735), maar niet aantoonbaar op de AC-poort. Omzettingsverlies en
   stand-by van de omvormer komen daardoor in `residual_energy` terecht, altijd aan de oplopende kant —
-  **bewust**: dat verlies is huisgebruik. `residual_power` (op de AC-poort) bevat het niet.
+  **bewust**: dat verlies is huisgebruik. Sinds 28-10 bevat `residual_power` (DC-zijde) het ook.
 - Per minuut niet strikt monotoon: net- en accutellers zitten in twee requests en tellen in stappen
   van 0,01 kWh. Over een kwartier middelt dat weg.
 - Resolutie 0,01 kWh voor alle vier de tellers (accutellers gecontroleerd tegen de HA-integratie
@@ -557,7 +680,7 @@ Requests (na het aaneensluiten van de ranges, zie [Read registers](#read-registe
 | 33213 overdischarge mirror | 15 min |
 | writes 43133/43132 | 30s |
 
-- **Direct bij wijziging**: `select.control_mode` en beide `number`-entiteiten roepen `apply_mode` synchroon aan via `on_value` (mode- en target_soc-wijziging roepen bovendien eerst `arm_soc_deadline` aan).
+- **Direct bij wijziging**: `select.control_mode` en beide `number`-entiteiten roepen `apply_mode` synchroon aan via `on_value` (alle drie roepen bovendien eerst `arm_command` aan, zie [Opdrachtvenster](#opdrachtvenster-15-min-en-safe-mode-pbi-046)).
 - **interval 30s** → `apply_mode` (setpoint + eventueel RC-herbevestiging, zie [Modi](#modi)) — dit is tevens de keepalive tegen de RC-timeout van de Solis (ingesteld op 2 minuten via 43282, dus 4× marge).
 - **interval 5min** → config-registers (43029, 43110, 43140) gecontroleerd en alleen gecorrigeerd bij afwijking van de verwachte waarde; 43282 wordt elke cyclus **onvoorwaardelijk** herschreven (geen drift-check).
 - **interval 15min** → `publish_grid_metrics`, zie [Grid Metrics](#grid-metrics--tumbling-window-15-min).
