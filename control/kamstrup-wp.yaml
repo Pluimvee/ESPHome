@@ -297,28 +297,28 @@ script:
             // Switch points from deltaT = P / (1.163 * q)  [W, l/h]
             // up:   when deltaT in the current band would exceed DT_MAX
             // down: when deltaT in the lower band would be <= DT_DOWN
-            const float DT_MAX  = 4.0f;       // K (near the flow at which heating curve factor 0.65 was set)
-            const float DT_DOWN = 3.2f;       // K (WP minimum is 2.8-3.3kW, must be able to drop back to 900)
+            const float DT_MAX  = 4.4f;       // K (near the flow at which heating curve factor 0.65 was set)
+            const float DT_DOWN = 3.4f;       // K (WP minimum is 2.8-3.3kW, must be able to drop back to 900)
             auto p_at = [](float dt, float q) { return dt * 1.163f * q; };
 
             // Step up/down with hysteresis per band (current band chosen by existing target)
             if (flow_target <= FLOW_MIN) {
-              if (pwr > p_at(DT_MAX, FLOW_MIN)) flow_target = FLOW_LOW;                 // 4.2kW
+              if (pwr > p_at(DT_MAX, FLOW_MIN)) flow_target = FLOW_LOW;                 // 4.6kW
             }
             else if (flow_target <= FLOW_LOW) {
-              if (pwr < p_at(DT_DOWN, FLOW_MIN)) flow_target = FLOW_MIN;                // 3.35kW
-              else if (pwr > p_at(DT_MAX, FLOW_LOW)) flow_target = FLOW_MID;            // 5.0kW
+              if (pwr < p_at(DT_DOWN, FLOW_MIN)) flow_target = FLOW_MIN;                // 3.55kW
+              else if (pwr > p_at(DT_MAX, FLOW_LOW)) flow_target = FLOW_MID;            // 5.5kW
             }
             else if (flow_target <= FLOW_MID) {
-              if (pwr < p_at(DT_DOWN, FLOW_LOW)) flow_target = FLOW_LOW;                // 4.0kW
-              else if (pwr > p_at(DT_MAX, FLOW_MID)) flow_target = FLOW_HIGH;           // 5.7kW
+              if (pwr < p_at(DT_DOWN, FLOW_LOW)) flow_target = FLOW_LOW;                // 4.25kW
+              else if (pwr > p_at(DT_MAX, FLOW_MID)) flow_target = FLOW_HIGH;           // 6.3kW
             }
             else if (flow_target <= FLOW_HIGH) {
-              if (pwr < p_at(DT_DOWN, FLOW_MID)) flow_target = FLOW_MID;                // 4.55kW
-              else if (pwr > p_at(DT_MAX, FLOW_HIGH)) flow_target = FLOW_MAX;           // 6.4kW
+              if (pwr < p_at(DT_DOWN, FLOW_MID)) flow_target = FLOW_MID;                // 4.85kW
+              else if (pwr > p_at(DT_MAX, FLOW_HIGH)) flow_target = FLOW_MAX;           // 7.0kW
             }
             else {  // FLOW_MAX band
-              if (pwr < p_at(DT_DOWN, FLOW_HIGH)) flow_target = FLOW_HIGH;              // 5.1kW
+              if (pwr < p_at(DT_DOWN, FLOW_HIGH)) flow_target = FLOW_HIGH;              // 5.4kW
             }
             if (id(flow_target_manual).state != flow_target)    // set slider in HA
               id(flow_target_manual).publish_state(flow_target);
