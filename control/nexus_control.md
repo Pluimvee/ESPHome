@@ -399,7 +399,14 @@ bijtrekken na de 89%-stilstand en offset-slijtage.
 - **Vloer 7,1 / plafond 99,9 blijven** (les van 05-09, zie hieronder).
 - **Weg van een eindpunt** begint hires midden in de nieuwe stap: op het eindpunt telt hires niet, dus
   zonder deze regel bleef hires na 7→8 op 7 staan (en na 100→99 op 100 → 99,9).
-- `g_off` wordt alleen bij een BMS-stap geschreven (flash), niet bij elke telling.
+- **API-actie `esphome.nexus_control_set_soc_hires(soc)`** (29-10): handmatige correctie, bv. na een
+  stroomuitval. Zet hires (begrensd op 7,1 … 99,9) en `g_off`; genegeerd op een BMS-eindpunt of zolang
+  de BMS nog niets gemeld heeft. Eerste gebruik 29-10: de reboot-sprongen van 08:42 (+0,85 pp) en van de
+  flash daarna teruggedraaid.
+- `g_off` (= hires − BMS) wordt bij elke telling bijgewerkt; `preferences: flash_write_interval: 15min`
+  begrenst de flash-writes. Een nette herstart (OTA) schrijft altijd eerst weg, stroomuitval kost hooguit
+  15 min telling. (28–29-10 werd `g_off` alleen bij een BMS-stap gezet: de reboot van 29-10 08:42 verloor
+  zo de telling sinds de laatste stap, 82,19 → 82,96.)
 - Spanning, richting en vermogen komen uit hetzelfde FC04-blok (33133–33152); `register_count: 2` op
   33133 sluit aan op 33135.
 

@@ -48,6 +48,11 @@ esp32:
   framework:
     type: esp-idf
 
+# restore_value-globals (o.a. g_off, continu bijgewerkt) naar flash: hooguit elke 15 min.
+# Een nette herstart (OTA) schrijft altijd eerst weg; stroomuitval kost hooguit 15 min telling.
+preferences:
+  flash_write_interval: 15min
+
 logger:
   level: INFO
   baud_rate: 0
@@ -59,6 +64,23 @@ logger:
 api:
   encryption:
     key: !secret api_key
+  actions:
+    # Handmatige correctie van battery_soc_hires (29-10), bv. na een stroomuitval. Buiten de
+    # BMS-eindpunten; begrensd op [7,1 … 99,9] zoals de telling zelf.
+    - action: set_soc_hires
+      variables:
+        soc: float
+      then:
+        - lambda: |-
+            float bms = id(g_batt_soc_last_raw);
+            if (bms <= ${hires_floor_pct}.0f || bms >= ${hires_top_pct}.0f) {
+              ESP_LOGW("nexus", "set_soc_hires genegeerd: BMS %.0f%% (eindpunt of nog onbekend)", bms);
+              return;
+            }
+            float h = std::min(${hires_top_pct}.0f - 0.1f, std::max(${hires_floor_pct}.0f + 0.1f, soc));
+            ESP_LOGW("nexus", "set_soc_hires: %.2f → %.2f%% (BMS %.0f%%)", id(g_hires), h, bms);
+            id(g_hires) = h;
+            id(g_off) = h - bms;
 
 ota:
   - platform: esphome
@@ -113,10 +135,10 @@ globals:
     type: float
     restore_value: false
     initial_value: '0.0'
-  # hires − BMS (pp) op het moment van de laatste BMS-stap. Alleen om hires over een
-  # herstart te bewaren (hires = BMS + g_off bij de eerste melding); geen correctie meer.
-  # Wijzigt alleen bij BMS-stappen, dus weinig flash-slijtage (ESPHome schrijft alleen bij
-  # een echte wijziging).
+  # hires − BMS (pp), continu bijgewerkt. Alleen om hires over een herstart te bewaren
+  # (hires = BMS + g_off bij de eerste melding); geen correctie meer. Flash-slijtage begrenst
+  # preferences: flash_write_interval (29-10: bij alleen opslaan per BMS-stap ging de telling
+  # sinds de laatste stap bij een reboot verloren, 0,8pp).
   - id: g_off
     type: float
     restore_value: true
@@ -356,6 +378,7 @@ sensor:
               } else {
                 id(g_hires) = std::min(TOP - 0.1f, std::max(FLOOR + 0.1f, id(g_hires) + dh));
               }
+              id(g_off) = id(g_hires) - bms;  // voor de herstart, zie g_off
             }
             id(g_batt_energy_last_ms) = now;
 
