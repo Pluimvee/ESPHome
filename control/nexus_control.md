@@ -239,7 +239,7 @@ waar de Solis een vast **accuvermogen** aanhoudt en het net de rest levert.
 
 ```
 want    = residual + R                              # zoals hierboven
-force   = want > 8000          (was force: want >= 5000)    # hysterese, user 28-10
+force   = want > 8000 en resttijd > 3 min   (was force: want >= 5000)    # hysterese, user 28-10
           alleen in charge, vóór het doel, en met bekende fasestroom (phase_cap ≠ NAN)
 force_w = clamp(min(R, 10000, phase_cap − residual), ≥ 0)
 force:  43136 = force_w/10 ; 43135 = 1 ; 43132/43133 niet schrijven ; return
@@ -256,6 +256,13 @@ uit:    43135 = 0 (eenmalig), daarna het gewone RC-pad
 - **Uit force: 43135 = 0 expliciet.** Zonder dat liep force bij een setpoint onder `RC_THRESHOLD_W`
   (geen 43132-schrijfactie) door tot de RC-timeout. Geldt ook bij de terugval naar safe mode.
 - Geen export: force alleen bij want ≥ 5 kW en force_w ≤ R, dus net = residual + force_w > 0.
+- **Niet instappen in de laatste 3 min van het venster** (29-10, user): aan het eind piekt R door de
+  30s-vloer (need / resttijd), terwijl de accu bovenin weinig opneemt. 29-10 01:59:21–02:00:51Z ging force
+  zo 90 s aan (10 kW gevraagd, ~2 kW opgenomen bij 98 %), elk kwartiereinde vlak bij het doel. In force
+  **blijven** mag wel; de volgende opdracht (nieuw venster, R zakt) haalt force eruit via de hysterese. Een
+  groot gat aan het eind van een venster betekent dat de accu het niet bijhield — dan helpt force ook niet.
+- **Eerste force-blok 29-10 01:15–01:45Z** (health): accu ~10,1 kW, net ~10,35 kW, zwaarste fase 15,0 A;
+  wissel RC ↔ force zonder onderbreking van het laden.
 - **Te verifiëren bij het eerste force-blok** (log `charge FORCE P=… R=… res=… imax=… cap=…`): accu laadt
   ~force_w, net ≈ residual + force_w, wissel RC → force zonder onderbreking van het laden, en terug.
 

@@ -1184,6 +1184,10 @@ script:
           const float FORCE_ON_W   = 8000.0f;
           const float FORCE_OFF_W  = 5000.0f;
           const float MAX_CHARGE_W = 10000.0f;  // omvormer; 43136 max 1000 x 10W
+          // Niet ínstappen in force in de laatste 3 min van het venster (user 29-10): daar piekt R
+          // door de 30s-vloer (need / resttijd) terwijl de accu bovenin weinig opneemt; 29-10
+          // 01:59Z ging force zo 90s nodeloos aan. In force blijven mag wel (hysterese).
+          const int32_t FORCE_ENTRY_CUTOFF_MS = 180000;
 
           float tgt_w      = id(target_grid_number).state;
           float tgt_soc    = id(target_soc_number).state;
@@ -1255,7 +1259,8 @@ script:
               // zelf, dus net = residual + laadvermogen moet onder phase_cap blijven. residual
               // bevat het laadvermogen niet (DC-zijde, PBI-012), dus geen terugkoppeling.
               if (mode == "charge" && !std::isnan(phase_cap)) {
-                force = id(g_force_charge) ? (want_w >= FORCE_OFF_W) : (want_w > FORCE_ON_W);
+                force = id(g_force_charge) ? (want_w >= FORCE_OFF_W)
+                                           : (want_w > FORCE_ON_W && left_ms > FORCE_ENTRY_CUTOFF_MS);
                 if (force) force_w = std::max(0.0f, std::min(rate_w, std::min(MAX_CHARGE_W, phase_cap - res)));
               }
             }
