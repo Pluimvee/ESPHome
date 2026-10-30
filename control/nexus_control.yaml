@@ -67,7 +67,29 @@ logger:
 api:
   encryption:
     key: !secret api_key
+  # Geen herstart zonder HA-client (default 15 min): de firmware valt zelf terug op safe mode
+  # (opdrachtvenster, RC-timeout), en een herstart kost tot 15 min hires-telling (#70).
+  reboot_timeout: 0s
   actions:
+    # Opdracht van het EMS in één aanroep (#69/#70): één venster, één apply_mode met de volledige
+    # opdracht. Drie losse schrijfacties gaven twee rondes op een half bijgewerkte opdracht.
+    - action: set_mode
+      variables:
+        mode: string
+        target_grid: float
+        target_soc: float
+      then:
+        - lambda: |-
+            if (!id(ems_mode_select).index_of(mode).has_value()) {
+              ESP_LOGW("nexus", "set_mode genegeerd: onbekende mode '%s'", mode.c_str());
+              return;
+            }
+            id(ems_mode_select).publish_state(mode);
+            id(target_grid_number).publish_state(target_grid);
+            id(target_soc_number).publish_state(target_soc);
+            id(arm_command).execute();
+            id(apply_mode).execute(true);
+
     # Handmatige correctie van battery_soc_hires (29-10), bv. na een stroomuitval. Buiten de
     # BMS-eindpunten; begrensd op [7,1 … 99,9] zoals de telling zelf.
     - action: set_soc_hires
@@ -275,7 +297,7 @@ sensor:
     accuracy_decimals: 0
     skip_updates: 5
 
-  # Reading the register block 33135-33152 as one FC04 every 5s
+  # Reading the register block 33133-33152 as one FC04 every 6s
   - platform: modbus_controller
     modbus_controller_id: solis
     id: battery_soc
@@ -621,7 +643,9 @@ sensor:
                 return id(rc_force_mode_reg).state == 1 &&
                        std::max(x, std::max(id(grid_current_a).state, id(grid_current_b).state)) > 25.0f;
             then:
-              - script.execute: apply_mode
+              - script.execute:
+                  id: apply_mode
+                  delatch: false
 
   # Energietellers voor residual_energy — lage prioriteit, elke 60s (skip_updates 59).
   # Accu: Solis-tellers 33161/33165 (U32, 0,01 kWh — gecontroleerd tegen de HA-integratie).
@@ -906,15 +930,19 @@ select:
       - "level"
       - "charge"
       - "discharge"
-    optimistic: true
+    # set_action i.p.v. on_value: alleen een schrijfactie uit HA is een opdracht, niet een publish
+    # vanuit de firmware (set_mode, safe-mode-terugval). Zo draait apply_mode één keer per opdracht.
+    optimistic: false
     # Na een (her)start altijd safe mode (level, target_grid 0): een opdracht van vóór de
     # herstart is niet meer geldig, de strategie schrijft binnen het kwartier een nieuwe.
     restore_value: false
     initial_option: "level"
-    on_value:
-      then:
-        - script.execute: arm_command
-        - script.execute: apply_mode
+    set_action:
+      - lambda: 'id(ems_mode_select).publish_state(x);'
+      - script.execute: arm_command
+      - script.execute:
+          id: apply_mode
+          delatch: true
 
 binary_sensor:
   # Diagnose: aan zolang de BMS stilstaat (meer energie sinds de laatste stap dan
@@ -969,13 +997,15 @@ number:
     max_value: 10000
     step: 100
     mode: box
-    optimistic: true
+    optimistic: false      # set_action, zie control_mode
     restore_value: false   # na een (her)start: safe mode, zie control_mode
     initial_value: 0
-    on_value:
-      then:
-        - script.execute: arm_command
-        - script.execute: apply_mode
+    set_action:
+      - lambda: 'id(target_grid_number).publish_state(x);'
+      - script.execute: arm_command
+      - script.execute:
+          id: apply_mode
+          delatch: true
 
   - platform: template
     id: target_soc_number
@@ -986,13 +1016,15 @@ number:
     max_value: 100
     step: 0.1
     mode: box
-    optimistic: true
+    optimistic: false      # set_action, zie control_mode
     restore_value: true
     initial_value: 80
-    on_value:
-      then:
-        - script.execute: arm_command
-        - script.execute: apply_mode
+    set_action:
+      - lambda: 'id(target_soc_number).publish_state(x);'
+      - script.execute: arm_command
+      - script.execute:
+          id: apply_mode
+          delatch: true
 
   # ── Modbus holding registers ─────────────────────────────────────────────────
   # Waarom number en niet output of sensor?
@@ -1180,7 +1212,9 @@ interval:
   # dus geen apart keepalive-interval meer nodig.
   - interval: 30s
     then:
-      - script.execute: apply_mode
+      - script.execute:
+          id: apply_mode
+          delatch: false
 
   # Publiceer grid metrics en reset venster elke 15 minuten
   - interval: 15min
@@ -1188,15 +1222,14 @@ interval:
       - script.execute: publish_grid_metrics
 
 script:
-  # Opdrachtvenster (PBI-046, 22-10-2026): elke schrijfactie van control_mode, target_soc of
-  # target_grid opent een venster van ${command_window_s}s vanaf nu — ook bij een ongewijzigde
-  # waarde (on_value vuurt bij elke publish). De strategie herhaalt de opdracht elk kwartier.
+  # Opdrachtvenster (PBI-046, 22-10-2026): elke opdracht (set_mode, of een schrijfactie van
+  # control_mode, target_soc of target_grid) opent een venster van ${command_window_s}s vanaf nu —
+  # ook bij een ongewijzigde waarde. De strategie herhaalt de opdracht elk kwartier.
   # Zelfde patroon als de auto-off in aqua-heatpump.yaml: mode restart + delay, elke opdracht
   # start de timer opnieuw. Na afloop zet arm_command alleen de Nexus-entiteiten op safe mode
   # (level, target_grid 0); apply_mode geeft daarop de Solis vrij naar self-use.
-  # Safe mode zelf krijgt geen venster (cmd_deadline_ms = 0, geen delay): anders zou de terugval
-  # via on_value zichzelf opnieuw armen en elke 15 min herhalen. cmd_deadline_ms is er voor de
-  # resttijd in apply_mode en command_timer.
+  # Safe mode zelf krijgt geen venster (cmd_deadline_ms = 0, geen delay). cmd_deadline_ms is er
+  # voor de resttijd in apply_mode en command_timer.
   - id: arm_command
     mode: restart
     then:
@@ -1208,16 +1241,15 @@ script:
           else:
             - lambda: 'id(cmd_deadline_ms) = millis() + ${command_window_s}UL * 1000UL;'
             - delay: ${command_window_s}s
-            # Eén lambda: de schrijfacties starten via on_value arm_command opnieuw (restart), en
-            # dat annuleert de acties ná de lopende — binnen een lambda loopt alles door.
-            # target_grid eerst stil op 0, zodat al de eerste on_value (van de mode) safe mode ziet:
-            # geen nieuw venster en geen tussentijdse schrijfactie naar de Solis. De publish daarna
-            # werkt HA bij; die on_value ziet ook safe mode en doet niets meer.
+            # Publish i.p.v. een schrijfactie: geen set_action, dus geen nieuw venster.
             - lambda: |-
                 ESP_LOGW("nexus", "Command timer verlopen → returning to safe mode");
-                id(target_grid_number).state = 0.0f;
-                id(ems_mode_select).make_call().set_option("level").perform();
+                id(cmd_deadline_ms) = 0;
+                id(ems_mode_select).publish_state("level");
                 id(target_grid_number).publish_state(0.0f);
+            - script.execute:
+                id: apply_mode
+                delatch: false
 
   # Eén script voor alle modes. hold is de enige echte uitzondering (ander Solis-mechanisme,
   # Force Charge i.p.v. RC Grid Adjustment) en moet altijd onvoorwaardelijk herbevestigd
@@ -1228,7 +1260,10 @@ script:
   # eigen RC-timeout (43282) laat 'm dan vanzelf verlopen naar self-use, zonder dat wij zelf
   # hoeven te bepalen wanneer dat "stabiel genoeg" is (dat is precies waar de oude level(0)-
   # speciale-geval-logica om vroeg was; die is nu overbodig, ditzelfde mechanisme dekt 'm mee).
+  # delatch: true bij een nieuwe opdracht, zie "Ontladen in charge" hieronder.
   - id: apply_mode
+    parameters:
+      delatch: bool
     then:
       - lambda: |-
           auto write_reg = [](esphome::number::Number *n, float val) {
@@ -1357,10 +1392,15 @@ script:
           // doel. Met ontlaadstroom 0 kan de Solis niet ontladen: huislast via het net, PV-overschot
           // blijft de accu in. Latch (user 30-10): in charge mag hij leveren zolang de SOC boven het
           // doel ligt; eenmaal op of onder het doel (of zonder geldige SOC) blijft ontladen dicht
-          // tot een andere mode (het register zelf onthoudt dat). Geen hysterese, dus geen
-          // heen-en-weer schrijven. Zonder geldige SOC is soc -1, dus ook dicht.
+          // tot een nieuwe opdracht of een andere mode (het register zelf onthoudt dat). Geen
+          // hysterese, dus geen heen-en-weer schrijven. Zonder geldige SOC is soc -1, dus ook dicht.
+          // Een nieuwe opdracht heft de latch op (user 30-10): ligt het doel onder de SOC, dan weer
+          // leveren tot het doel. Voor hold geeft het EMS de actuele SOC mee: dan blijft hij dicht.
           if (mode == "charge" && soc <= tgt_soc && id(bat_max_discharge_reg).state != 0)
             write_reg(id(bat_max_discharge_reg), 0);
+          else if (mode == "charge" && soc > tgt_soc && delatch &&
+                   id(bat_max_discharge_reg).state != ${battery_max_discharge_a} * 10)
+            write_reg(id(bat_max_discharge_reg), ${battery_max_discharge_a} * 10);
 
           // Geen force (ook na hold): 43135 expliciet uit; het register is de waarheid. 43132 = 1 zet
           // force in de Solis ook uit, maar onder RC_THRESHOLD_W wordt 43132 niet geschreven en liep
@@ -1414,7 +1454,7 @@ script:
               : sorted_buf[sz / 2];
           }
 
-          // Histogram JSON (bucket boundaries: ±100/300/500/1000 W)
+          // Histogram JSON (bucket boundaries: ±20/50/100/500 W)
           char hist[256];
           snprintf(hist, sizeof(hist),
             "{\"gt500\":%d,\"100:500\":%d,\"50:100\":%d,\"20:50\":%d,"

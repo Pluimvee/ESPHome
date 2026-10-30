@@ -160,7 +160,7 @@ Er is geen `binary_sensor.fault` of `binary_sensor.grid_meter_connected` — fou
 
 ## Modi
 
-Eén script, `apply_mode`, dekt alle vier de modes — geen apart `update_soc_setpoint` meer. Aangeroepen bij elke mode-/target-wijziging (`on_value`) én elke **30s** via `interval`.
+Eén script, `apply_mode`, dekt alle vier de modes — geen apart `update_soc_setpoint` meer. Aangeroepen bij elke opdracht (`set_mode`, of een schrijfactie op mode/target via `set_action`) én elke **30s** via `interval`.
 
 ### hold
 Enige echte uitzondering: ander Solis-mechanisme (Force Charge i.p.v. RC Grid Adjustment), en moet **onvoorwaardelijk** herbevestigd worden — self-use is precies wat `hold` wil vóórkomen. Schrijft `43136=0` (RC Force Charge Power) en `43135=1` (Force Charge aan, op 0W), en stopt (`return`) vóór de rest van het script. Valt net als elke andere opdracht na 900s terug naar safe mode; force charge verloopt daarna via de RC-timeout (2 min). Een nieuwe opdracht die 43132 = 1 schrijft, zet force in de Solis zelf meteen uit (43135 → 0) — de firmware hoeft 43135 daarvoor niet te schrijven. `43132`/`43133` worden in `hold` niet aangeraakt.
@@ -246,17 +246,22 @@ elke Solis-modus. Getest 30-10 17:31: 330 W ontladen → −80 W (stand-by uit h
 terug op 50 A direct weer ontladen. (43131 "Battery discharge limit power" deed niets in self-use, en
 Remote Dispatch 44100+ kent onze omvormerfirmware niet: 34502 bestaat niet.)
 
-Twee regels in `apply_mode`; het register is de waarheid (user 30-10), geen eigen administratie:
+Drie regels in `apply_mode`; het register is de waarheid (user 30-10), geen eigen administratie:
 
 ```
 if (mode != charge && 43118 != 50 A) 43118 = 50 A
 if (mode == charge && soc <= doel && 43118 != 0) 43118 = 0
+else if (mode == charge && soc > doel && delatch && 43118 != 50 A) 43118 = 50 A
 ```
 
 - **Latch**: komt `charge` binnen met de SOC boven het doel, dan mag de accu leveren tot het doel (uitstel).
-  Eenmaal op 0 blijft het register 0 zolang het `charge` is, ook als hires daarna weer boven het doel komt
-  (PV-overschot); alleen een andere mode zet hem terug. Geen hysterese, dus geen heen-en-weer schrijven.
-  Zonder geldige SOC is `soc` −1, dus dicht.
+  Eenmaal op 0 blijft het register 0 tot de volgende opdracht, ook als hires daarna weer boven het doel
+  komt (PV-overschot). Geen hysterese, dus geen heen-en-weer schrijven. Zonder geldige SOC is `soc` −1,
+  dus dicht.
+- **Delatch** (#70, user 30-10): elke opdracht (`set_mode`, of een schrijfactie op mode/target) roept
+  `apply_mode(delatch = true)` aan; het interval en de fasestroom-trigger roepen hem aan met `false`. Ligt het
+  nieuwe doel onder de SOC, dan weer leveren tot het doel. Voor hold geeft het EMS de actuele SOC (inclusief
+  bijgeladen PV) als doel mee: dan pakt de tweede regel het en blijft hij dicht, zonder schrijfactie.
 - In `charge` kan de accu dus alleen laden of stilstaan zodra het doel bereikt is. Huislast en pieken gaan
   via het net; PV-overschot gaat de accu in (43117 laden blijft 50 A). Ook tijdens gewoon laden verdwijnen
   daarmee de korte ontlaadpieken bij een sprong in huislast.
@@ -269,8 +274,6 @@ if (mode == charge && soc <= doel && 43118 != 0) 43118 = 0
 - Log: `dis=…A` in de charge-regel (gelezen registerwaarde).
 - Te verifiëren: vasthouden overdag (PV-overschot gaat de accu in, geen export, geen ontladen), en een
   "lever tot X"-blok 's nachts (ontladen tot X, daarna 0 A).
-- Let op: verlaagt de strategie het doel binnen `charge` nadat het eerdere doel al bereikt is, dan blijft
-  ontladen dicht (latch) tot een andere mode. Zo bedoeld (user 30-10).
 
 ### Force charge boven 8 kW (PBI-058, 28-10-2026)
 
@@ -329,11 +332,12 @@ wint vooral als er géén PV is (de oude marge trok dan toch 9pp af) en bij huis
 Sinds 22-10-2026 is elke opdracht een **kwartieropdracht**, gelijk aan de EPEX-kwartierprijzen en de
 strategie-run die elk kwartier draait (tot 22-10: het eerstvolgende hele wandklok-uur via `ha_time`).
 
-- **Arm**: elke schrijfactie van `select.control_mode`, `number.target_soc` of `number.target_grid_power`
-  opent een venster van `command_window_s` (900s) **vanaf nu** — ook bij een ongewijzigde waarde. In
-  ESPHome 2026.8 roepen `Number::publish_state` en `Select::publish_state` de callback altijd aan, dus
-  `on_value` vuurt bij elke schrijfactie. De controller herhaalt dezelfde opdracht elk kwartier om het
-  venster te verlengen (de write-on-change in `ems_controller.py` moet daarvoor uit).
+- **Arm**: elke opdracht opent een venster van `command_window_s` (900s) **vanaf nu** — ook bij een
+  ongewijzigde waarde. Een opdracht is de API-actie `esphome.nexus_control_set_mode(mode, target_grid,
+  target_soc)` (#70: alle drie tegelijk, één keer `arm_command` en `apply_mode`), of een schrijfactie op
+  `select.control_mode`, `number.target_soc` of `number.target_grid_power` (`set_action`, dus alleen
+  schrijfacties uit HA, geen publish vanuit de firmware). De controller herhaalt de opdracht elk kwartier
+  om het venster te verlengen (de write-on-change in `ems_controller.py` moet daarvoor uit).
 - **Safe mode** = `level` met `target_grid` 0, **zonder venster** (`command_timer` 0). Daarvoor was
   `apply_mode` al ingericht: setpoint 0, 43132 wordt onder `RC_THRESHOLD_W` niet herbevestigd, en de
   Solis valt via zijn RC-timeout (≤ 2 min) terug op zijn eigen self-use. `apply_mode` is voor PBI-046
@@ -341,9 +345,9 @@ strategie-run die elk kwartier draait (tot 22-10: het eerstvolgende hele wandklo
 - **Terugval**: na 900s zonder nieuwe opdracht zet `arm_command` de Nexus-entiteiten op safe mode
   (`target_grid` 0, `control_mode` `level`) — een zichtbare state-wijziging in HA, met
   `ESP_LOGW("Command timer verlopen → returning to safe mode")`. Geldt voor `charge`, `discharge`, `hold` en `level` met
-  `target_grid` ≠ 0. De Solis-kant doet `apply_mode` (via de `on_value` van die schrijfacties).
-- **Geen lus**: safe mode zelf armt geen venster. Anders zou de terugval via `on_value` zichzelf opnieuw
-  armen en elke 15 min herhalen — daarom de `if` in `arm_command`.
+  `target_grid` ≠ 0. De Solis-kant doet `apply_mode(false)`, direct daarna in `arm_command`.
+- **Geen lus**: de terugval publiceert alleen (geen `set_action`), dus armt geen nieuw venster. Een
+  handmatige schrijfactie naar safe mode armt ook geen venster — daarom de `if` in `arm_command`.
 - **Na een (her)start**: altijd safe mode (`control_mode` en `target_grid` zonder `restore_value`).
 - **R** rekent met de resttijd van hetzelfde venster (900s), met de vloer van 30s (`RATE_FLOOR_MS`).
 
@@ -351,19 +355,17 @@ Implementatie, zelfde patroon als de auto-off in `aqua-heatpump.yaml`. `arm_comm
 Nexus-entiteiten; alles wat naar de Solis gaat doet `apply_mode`:
 
 ```
-arm_command (mode: restart)          # vanuit on_value van mode / target_soc / target_grid
+arm_command (mode: restart)          # vanuit set_mode en de set_action van mode / target_soc / target_grid
   safe (level, target_grid 0) → cmd_deadline_ms = 0        # geen venster, geen delay
-  anders → cmd_deadline_ms = now + 900s ; delay 900s ; lambda: target_grid := 0 ; control_mode := level
+  anders → cmd_deadline_ms = now + 900s ; delay 900s ;
+           cmd_deadline_ms = 0 ; publish level, target_grid 0 ; apply_mode(false)
 
-apply_mode (elke 30s en bij elke on_value)   # ongewijzigd; level 0 W → Solis self-use via RC-timeout
+apply_mode(delatch)   # elke 30s (false), bij elke opdracht (true); level 0 W → Solis self-use via RC-timeout
 ```
 
-De twee schrijfacties staan in **één** lambda: ze starten via `on_value` `arm_command` opnieuw
-(restart), en dat annuleert de acties ná de lopende — een lambda die al loopt maakt zijn werk af.
-`target_grid` wordt eerst stil op 0 gezet (`state = 0`, nog geen `on_value`), daarna de mode via een
-call, en pas dan `publish_state(0)` voor HA. Zo ziet al de eerste `on_value` safe mode: geen nieuw
-venster en geen tussentijdse schrijfactie naar de Solis (met `set_value(0)` eerst zou de mode nog
-`charge` zijn en arm_command kort een nieuw venster openen).
+Tot #70 liepen `arm_command` en `apply_mode` via `on_value`, dat bij elke publish vuurt. De controller
+schreef de drie entiteiten los, dus twee van de drie rondes rekenden met een half bijgewerkte opdracht,
+en de terugval moest met een stille `state = 0` voorkomen dat hij zichzelf opnieuw armde.
 
 **Synchronisatie met de strategie**: bestaat `sensor.nexus_control_command_timer`, dan stuurt de
 strategie kwartier-tussendoelen; zo niet, dan uur-doelen. Flashen en de strategie hoeven daardoor niet
@@ -730,7 +732,7 @@ Requests (na het aaneensluiten van de ranges, zie [Read registers](#read-registe
 | Request | Cadans |
 |---|---|
 | 33263 meter | 2s |
-| 33135–33152 hoofdblok | 6s |
+| 33133–33152 hoofdblok | 6s |
 | 33252–33256 fasestromen | 11s |
 | 33161–33166 en 33283–33286 energietellers | 60s |
 | 33213 overdischarge mirror | 15 min |
@@ -754,7 +756,7 @@ ook zoveel registers. Gecontroleerd 30-10: de Solis levert het blok van 31 regis
   ook na `hold` zet de eerste ronde in een andere mode force meteen uit (43135 = 0), in plaats van te
   wachten op de RC-timeout.
 
-- **Direct bij wijziging**: `select.control_mode` en beide `number`-entiteiten roepen `apply_mode` synchroon aan via `on_value` (alle drie roepen bovendien eerst `arm_command` aan, zie [Opdrachtvenster](#opdrachtvenster-15-min-en-safe-mode-pbi-046)).
+- **Direct bij een opdracht**: `set_mode` en de `set_action` van `select.control_mode` en beide `number`-entiteiten roepen eerst `arm_command` en dan `apply_mode(true)` synchroon aan, zie [Opdrachtvenster](#opdrachtvenster-15-min-en-safe-mode-pbi-046).
 - **interval 30s** → `apply_mode` (setpoint + eventueel RC-herbevestiging, zie [Modi](#modi)) — dit is tevens de keepalive tegen de RC-timeout van de Solis (ingesteld op 2 minuten via 43282, dus 4× marge).
 - **interval 5min** → config-registers (43029, 43110, 43140) gecontroleerd en alleen gecorrigeerd bij afwijking van de verwachte waarde; 43282 wordt elke cyclus **onvoorwaardelijk** herschreven (geen drift-check).
 - **interval 15min** → `publish_grid_metrics`, zie [Grid Metrics](#grid-metrics--tumbling-window-15-min).
