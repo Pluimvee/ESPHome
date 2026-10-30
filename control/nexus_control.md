@@ -101,6 +101,7 @@ Apart FC04-request (los register, elke 15 min) voor de overdischarge-ondergrens 
 | 43133 | S16 | 10W | RC Grid Active Power setpoint | Solis-conv: + = export, − = import | elke 30s, **onvoorwaardelijk** (alle modes behalve hold) |
 | 43135 | U16 | — | RC Force Charge/Discharge | 0=OFF, **1**=Force Charge | `hold` (→1) en force charge (→1 elke 30s, →0 bij verlaten), zie [Force charge](#force-charge-boven-8-kw-pbi-058-28-10-2026) |
 | 43136 | U16 | 10W | RC Force Charge Power | — | `hold` (→0) en force charge (→ force_w/10) |
+| 43118 | U16 | 0.1A | Battery max discharge current | 0 of 500 (50 A) | alleen bij wijziging; readback elke 5 min — zie [Ontladen blokkeren in charge](#ontladen-blokkeren-in-charge-30-10-2026) |
 | 43140 | U16 | — | Meter1 type & location | **0x0105** = Standard Eastron 3Ph, Grid | elke 5 min, alleen bij afwijking |
 | 43282 | U16 | 1min | RC Timeout | Geldig bereik 2–30; **schrijf 2** (minimum) | elke 5 min, onvoorwaardelijk |
 
@@ -229,6 +230,40 @@ else:
   een overschrijding duurt hooguit één ronde. De grenzen duwen het setpoint nooit voorbij `tgt_w` terug.
 - **Log**: `charge tgt=… R=… res=… adj=… sp=… soc=…/… imax=…A cap=…W rc=…` (imax/cap NAN zonder
   fasestroom, R/res 0/NAN voorbij het doel).
+
+### Ontladen blokkeren in charge (30-10-2026)
+
+**Opdracht** (user 30-10): `charge` naar X betekent "lever tot X, houd daarna vast", en het net gaat in
+`charge` nooit onder 0. De EMS geeft de opdracht; de firmware voert hem uit.
+
+**Probleem**: alleen met RC grid-adjustment lukte vasthouden niet. 30-10 13:15–14:05 (doel 96,4/96,5)
+pendelde de accu per 5 min tussen −2,7 en +2,7 kW: het setpoint (residual) loopt 30 s achter op de
+huislast, dus bij een sprong in huislast ontlaadde de accu tot de volgende ronde; en bij hires net boven
+het doel gold "voorbij het doel" (setpoint 0), waarbij de accu de hele huislast leverde.
+
+**Oplossing**: Solis-register **43118** (Battery max discharge current, 0,1 A) op 0 zet het ontladen uit, in
+elke Solis-modus. Getest 30-10 17:31: 330 W ontladen → −80 W (stand-by uit het net), net +390 W, binnen 6 s;
+terug op 50 A direct weer ontladen. (43131 "Battery discharge limit power" deed niets in self-use, en
+Remote Dispatch 44100+ kent onze omvormerfirmware niet: 34502 bestaat niet.)
+
+```
+charge:  soc < 0.5                    → ontladen 0           (geen geldige SOC)
+         toegestaan en soc <= doel    → ontladen 0           (doel bereikt: vasthouden)
+         geblokkeerd en soc > doel+0,3 → ontladen 50 A       (lever tot het doel)
+overige modi (level, hold, discharge, safe mode): 50 A
+```
+
+- In `charge` kan de accu dus alleen laden of stilstaan zolang hij niet ruim boven het doel zit. Huislast
+  en pieken gaan via het net; PV-overschot gaat de accu in (43117 laden blijft 50 A). Ook tijdens gewoon
+  laden verdwijnen daarmee de korte ontlaadpieken bij een sprong in huislast.
+- **Flash**: de spec zegt bij 43118 niet "Not save in Flash" (wel bij 43130/43131); aangenomen dat hij
+  blijvend is. Daarom alleen schrijven bij een wijziging (`g_dis_written`), plus readback in de 5 min-check.
+- **Herstel**: na een (her)start is `g_dis_written` −1, dus de eerste `apply_mode` (safe mode = `level`)
+  schrijft altijd 50 A. Safe mode en `hold` zetten 50 A. Handmatig: `number.solis_s6_eh3p_battery_max_discharge_current`.
+- `discharge` laat 43117/43118 op 50/50 (user 30-10; symmetrie, laden 0 in `discharge`, kan later).
+- Log: `dis=…A` in de charge-regel, en `Max ontlaadstroom → …A` bij elke schrijfactie.
+- Te verifiëren: vasthouden overdag (PV-overschot gaat de accu in, geen export, geen ontladen), en een
+  "lever tot X"-blok 's nachts (ontladen tot X, daarna 0 A).
 
 ### Force charge boven 8 kW (PBI-058, 28-10-2026)
 
