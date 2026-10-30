@@ -716,7 +716,7 @@ sensor:
         - lambda: |-
             id(g_base_energy_kwh) = ${battery_capacity_kwh} * x / 100.0f;
 
-  # Brug-registers voor het holding-leesblok 43110-43140 (31 registers, één FC03 per 5 min).
+  # Brug-registers voor het holding-leesblok 43110-43140 (31 registers, één FC03 per minuut).
   # ESPHome voegt alleen exact aansluitende registers samen; zonder deze bruggen waren 43110,
   # 43118, 43132-43133, 43135-43136 en 43140 zes losse reads. Sensoren, geen numbers: een
   # number met register_count > 1 zou bij schrijven ook zoveel registers schrijven (FC10).
@@ -729,7 +729,7 @@ sensor:
     address: 43111
     value_type: U_WORD
     register_count: 7   # 43111-43117
-    skip_updates: 300
+    skip_updates: 59
   - platform: modbus_controller
     modbus_controller_id: solis
     id: holding_bridge_43119
@@ -738,7 +738,7 @@ sensor:
     address: 43119
     value_type: U_WORD
     register_count: 13  # 43119-43131
-    skip_updates: 300
+    skip_updates: 59
   - platform: modbus_controller
     modbus_controller_id: solis
     id: holding_bridge_43134
@@ -746,7 +746,7 @@ sensor:
     register_type: holding
     address: 43134
     value_type: U_WORD
-    skip_updates: 300
+    skip_updates: 59
   - platform: modbus_controller
     modbus_controller_id: solis
     id: holding_bridge_43137
@@ -755,7 +755,7 @@ sensor:
     address: 43137
     value_type: U_WORD
     register_count: 3   # 43137-43139
-    skip_updates: 300
+    skip_updates: 59
 
   # Accucapaciteit volgens spec — vaste waarde uit de substitutions, alleen gepubliceerd
   # zodat HA/AppDaemon de aanname kan zien. Geen input meer: hij komt overeen met de
@@ -1006,7 +1006,7 @@ number:
   #
   # Adresblokken (ESPHome voegt alleen exact aansluitende registers samen tot één FC03 request):
   #   43029         → los request, elke 5 min
-  #   43110..43140  → één request van 31 registers, elke 5 min (config + RC + 43118; gaten
+  #   43110..43140  → één request van 31 registers, elke minuut (config + RC + 43118; gaten
   #                   gevuld met holding_bridge_* sensoren, zie aldaar)
   #   43282         → los request, elk uur
 
@@ -1047,12 +1047,12 @@ number:
     max_value: 65535
     step: 1
     internal: true
-    skip_updates: 300
+    skip_updates: 59
 
   # Max. ontlaadstroom (0,1A). 0 blokkeert ontladen in elke Solis-modus (getest 30-10: 330W
   # ontladen → 0, net nam de huislast over binnen 6s). Waarschijnlijk blijvend opgeslagen
   # (spec zegt niet "Not save in Flash", anders dan 43130/43131): alleen schrijven bij een
-  # wijziging t.o.v. de gelezen registerwaarde (elke 5 min gelezen, zie het leesblok
+  # wijziging t.o.v. de gelezen registerwaarde (elke minuut gelezen, zie het leesblok
   # 43110-43140 bij holding_bridge_*).
   - platform: modbus_controller
     modbus_controller_id: solis
@@ -1064,10 +1064,10 @@ number:
     max_value: 1000
     step: 1
     internal: true
-    skip_updates: 300
+    skip_updates: 59
 
   # RC operation registers: geschreven door apply_mode via perform(), teruggelezen in het
-  # leesblok 43110-43140 (elke 5 min). ModbusNumber publiceert bij een schrijfactie direct de
+  # leesblok 43110-43140 (elke minuut). ModbusNumber publiceert bij een schrijfactie direct de
   # nieuwe waarde (optimistisch, vóór de bevestiging); alleen het teruglezen is echte terugkoppeling.
   # output zou semantisch beter passen (write-only) maar ondersteunt geen raw integer waarden
   - platform: modbus_controller
@@ -1080,7 +1080,7 @@ number:
     max_value: 1000
     step: 1
     internal: true
-    skip_updates: 300
+    skip_updates: 59
 
   # Force-toestand van de Solis; apply_mode leest hem als waarheid (geen eigen kopie). De Solis
   # zet hem zelf op 0 bij 43132 = 1 of na de RC-timeout.
@@ -1094,7 +1094,7 @@ number:
     max_value: 3
     step: 1
     internal: true
-    skip_updates: 300
+    skip_updates: 59
 
   # RC Grid Adjustment ON/OFF — geschreven door apply_mode, zie RC_THRESHOLD_W-logica daar.
   - platform: modbus_controller
@@ -1107,7 +1107,7 @@ number:
     max_value: 1
     step: 1
     internal: true
-    skip_updates: 300
+    skip_updates: 59
 
   - platform: modbus_controller
     modbus_controller_id: solis
@@ -1124,7 +1124,7 @@ number:
     max_value: 1000
     step: 1
     internal: true
-    skip_updates: 300
+    skip_updates: 59
 
   - platform: modbus_controller
     modbus_controller_id: solis
@@ -1136,7 +1136,7 @@ number:
     max_value: 65535
     step: 1
     internal: true
-    skip_updates: 300
+    skip_updates: 59
 
   - platform: modbus_controller
     modbus_controller_id: solis

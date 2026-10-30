@@ -101,7 +101,7 @@ Apart FC04-request (los register, elke 15 min) voor de overdischarge-ondergrens 
 | 43133 | S16 | 10W | RC Grid Active Power setpoint | Solis-conv: + = export, − = import | elke 30s, **onvoorwaardelijk** (alle modes behalve hold) |
 | 43135 | U16 | — | RC Force Charge/Discharge | 0=OFF, **1**=Force Charge | `hold` (→1) en force charge (→1 elke 30s, →0 bij verlaten), zie [Force charge](#force-charge-boven-8-kw-pbi-058-28-10-2026) |
 | 43136 | U16 | 10W | RC Force Charge Power | — | `hold` (→0) en force charge (→ force_w/10) |
-| 43118 | U16 | 0.1A | Battery max discharge current | 0 of 500 (50 A) | alleen bij afwijking van het gelezen register (gelezen elke 5 min) — zie [Ontladen blokkeren in charge](#ontladen-blokkeren-in-charge-30-10-2026) |
+| 43118 | U16 | 0.1A | Battery max discharge current | 0 of 500 (50 A) | alleen bij afwijking van het gelezen register (gelezen elke minuut) — zie [Ontladen blokkeren in charge](#ontladen-blokkeren-in-charge-30-10-2026) |
 | 43140 | U16 | — | Meter1 type & location | **0x0105** = Standard Eastron 3Ph, Grid | elke 5 min, alleen bij afwijking |
 | 43282 | U16 | 1min | RC Timeout | Geldig bereik 2–30; **schrijf 2** (minimum) | elke 5 min, onvoorwaardelijk |
 
@@ -261,7 +261,7 @@ if (mode == charge && soc <= doel && 43118 != 0) 43118 = 0
   via het net; PV-overschot gaat de accu in (43117 laden blijft 50 A). Ook tijdens gewoon laden verdwijnen
   daarmee de korte ontlaadpieken bij een sprong in huislast.
 - **Flash**: de spec zegt bij 43118 niet "Not save in Flash" (wel bij 43130/43131); aangenomen dat hij
-  blijvend is. Daarom alleen schrijven bij afwijking van het gelezen register (elke 5 min gelezen; na een
+  blijvend is. Daarom alleen schrijven bij afwijking van het gelezen register (elke minuut gelezen; na een
   schrijfactie publiceert de number zelf de nieuwe waarde, `ModbusNumber::control`).
 - **Herstel**: na een (her)start is het register nog onbekend (NAN ≠ 500), dus de eerste `apply_mode` (safe
   mode = `level`) schrijft 50 A. Safe mode en `hold` zetten 50 A. Handmatig: `number.solis_s6_eh3p_battery_max_discharge_current`.
@@ -734,7 +734,7 @@ Requests (na het aaneensluiten van de ranges, zie [Read registers](#read-registe
 | 33252–33256 fasestromen | 11s |
 | 33161–33166 en 33283–33286 energietellers | 60s |
 | 33213 overdischarge mirror | 15 min |
-| 43110–43140 holding-blok (FC03, 31 registers) | 5 min |
+| 43110–43140 holding-blok (FC03, 31 registers) | 1 min |
 | 43029 CT-richting (FC03) | 5 min |
 | 43282 RC-timeout (FC03) | 1 uur |
 | writes 43133/43132 | 30s |
@@ -743,7 +743,7 @@ Requests (na het aaneensluiten van de ranges, zie [Read registers](#read-registe
 een Solis-register staat, maar leest het register terug. Let op: `ModbusNumber::control` publiceert de
 nieuwe waarde al bij het in de wachtrij zetten (optimistisch, vóór de bevestiging van de omvormer); pas de
 volgende read is echte terugkoppeling. Daarom worden de stuurregisters (43118, 43132/43133, 43135/43136)
-elke 5 min teruggelezen, in één blok 43110–43140: ESPHome voegt alleen exact aansluitende registers samen,
+elke minuut teruggelezen (user 30-10; ~150 ms bustijd per minuut), in één blok 43110–43140: ESPHome voegt alleen exact aansluitende registers samen,
 dus de gaten (43111–43117, 43119–43131, 43134, 43137–43139) zijn gevuld met interne lees-sensoren
 `holding_bridge_*` (`register_count`). Sensoren, geen numbers: een number met `register_count` > 1 schrijft
 ook zoveel registers. Gecontroleerd 30-10: de Solis levert het blok van 31 registers in één read (spec: max
