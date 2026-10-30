@@ -101,7 +101,7 @@ Apart FC04-request (los register, elke 15 min) voor de overdischarge-ondergrens 
 | 43133 | S16 | 10W | RC Grid Active Power setpoint | Solis-conv: + = export, − = import | elke 30s, **onvoorwaardelijk** (alle modes behalve hold) |
 | 43135 | U16 | — | RC Force Charge/Discharge | 0=OFF, **1**=Force Charge | `hold` (→1) en force charge (→1 elke 30s, →0 bij verlaten), zie [Force charge](#force-charge-boven-8-kw-pbi-058-28-10-2026) |
 | 43136 | U16 | 10W | RC Force Charge Power | — | `hold` (→0) en force charge (→ force_w/10) |
-| 43118 | U16 | 0.1A | Battery max discharge current | 0 of 500 (50 A) | alleen bij wijziging; readback elke 5 min — zie [Ontladen blokkeren in charge](#ontladen-blokkeren-in-charge-30-10-2026) |
+| 43118 | U16 | 0.1A | Battery max discharge current | 0 of 500 (50 A) | alleen bij afwijking van het gelezen register (gelezen elke 5 min) — zie [Ontladen blokkeren in charge](#ontladen-blokkeren-in-charge-30-10-2026) |
 | 43140 | U16 | — | Meter1 type & location | **0x0105** = Standard Eastron 3Ph, Grid | elke 5 min, alleen bij afwijking |
 | 43282 | U16 | 1min | RC Timeout | Geldig bereik 2–30; **schrijf 2** (minimum) | elke 5 min, onvoorwaardelijk |
 
@@ -246,24 +246,31 @@ elke Solis-modus. Getest 30-10 17:31: 330 W ontladen → −80 W (stand-by uit h
 terug op 50 A direct weer ontladen. (43131 "Battery discharge limit power" deed niets in self-use, en
 Remote Dispatch 44100+ kent onze omvormerfirmware niet: 34502 bestaat niet.)
 
+Twee regels in `apply_mode`; het register is de waarheid (user 30-10), geen eigen administratie:
+
 ```
-charge:  soc < 0.5                    → ontladen 0           (geen geldige SOC)
-         toegestaan en soc <= doel    → ontladen 0           (doel bereikt: vasthouden)
-         geblokkeerd en soc > doel+0,3 → ontladen 50 A       (lever tot het doel)
-overige modi (level, hold, discharge, safe mode): 50 A
+if (mode != charge && 43118 != 50 A) 43118 = 50 A
+if (mode == charge && soc <= doel && 43118 != 0) 43118 = 0
 ```
 
-- In `charge` kan de accu dus alleen laden of stilstaan zolang hij niet ruim boven het doel zit. Huislast
-  en pieken gaan via het net; PV-overschot gaat de accu in (43117 laden blijft 50 A). Ook tijdens gewoon
-  laden verdwijnen daarmee de korte ontlaadpieken bij een sprong in huislast.
+- **Latch**: komt `charge` binnen met de SOC boven het doel, dan mag de accu leveren tot het doel (uitstel).
+  Eenmaal op 0 blijft het register 0 zolang het `charge` is, ook als hires daarna weer boven het doel komt
+  (PV-overschot); alleen een andere mode zet hem terug. Geen hysterese, dus geen heen-en-weer schrijven.
+  Zonder geldige SOC is `soc` −1, dus dicht.
+- In `charge` kan de accu dus alleen laden of stilstaan zodra het doel bereikt is. Huislast en pieken gaan
+  via het net; PV-overschot gaat de accu in (43117 laden blijft 50 A). Ook tijdens gewoon laden verdwijnen
+  daarmee de korte ontlaadpieken bij een sprong in huislast.
 - **Flash**: de spec zegt bij 43118 niet "Not save in Flash" (wel bij 43130/43131); aangenomen dat hij
-  blijvend is. Daarom alleen schrijven bij een wijziging (`g_dis_written`), plus readback in de 5 min-check.
-- **Herstel**: na een (her)start is `g_dis_written` −1, dus de eerste `apply_mode` (safe mode = `level`)
-  schrijft altijd 50 A. Safe mode en `hold` zetten 50 A. Handmatig: `number.solis_s6_eh3p_battery_max_discharge_current`.
+  blijvend is. Daarom alleen schrijven bij afwijking van het gelezen register (elke 5 min gelezen; na een
+  schrijfactie publiceert de number zelf de nieuwe waarde, `ModbusNumber::control`).
+- **Herstel**: na een (her)start is het register nog onbekend (NAN ≠ 500), dus de eerste `apply_mode` (safe
+  mode = `level`) schrijft 50 A. Safe mode en `hold` zetten 50 A. Handmatig: `number.solis_s6_eh3p_battery_max_discharge_current`.
 - `discharge` laat 43117/43118 op 50/50 (user 30-10; symmetrie, laden 0 in `discharge`, kan later).
-- Log: `dis=…A` in de charge-regel, en `Max ontlaadstroom → …A` bij elke schrijfactie.
+- Log: `dis=…A` in de charge-regel (gelezen registerwaarde).
 - Te verifiëren: vasthouden overdag (PV-overschot gaat de accu in, geen export, geen ontladen), en een
   "lever tot X"-blok 's nachts (ontladen tot X, daarna 0 A).
+- Let op: verlaagt de strategie het doel binnen `charge` nadat het eerdere doel al bereikt is, dan blijft
+  ontladen dicht (latch) tot een andere mode. Zo bedoeld (user 30-10).
 
 ### Force charge boven 8 kW (PBI-058, 28-10-2026)
 

@@ -30,9 +30,6 @@ substitutions:
   # Max. ontlaadstroom van de Solis (43118, A) buiten het blokkeren in charge; gelijk aan
   # de stand van 30-10-2026 (43117 laden en 43118 ontladen beide 50,0 A).
   battery_max_discharge_a: "50"
-  # In charge mag de accu alleen ontladen als de SOC meer dan dit (pp) boven het doel ligt;
-  # daarna tot het doel. Hysterese tegen schrijven bij elke kleine overschrijding.
-  discharge_band_pp: "0.3"
   # Opdrachtvenster (s): elke opdracht geldt zo lang vanaf het schrijven; daarna safe mode
   # (level, target_grid 0). Gelijk aan de kwartier-cadans van de EMS-strategie (PBI-046).
   command_window_s: "900"
@@ -133,17 +130,6 @@ globals:
     type: bool
     restore_value: false
     initial_value: 'false'
-  # Ontladen toegestaan in charge (hysterese, zie apply_mode); buiten charge altijd true.
-  - id: g_dis_allow
-    type: bool
-    restore_value: false
-    initial_value: 'true'
-  # Laatst naar 43118 geschreven ontlaadstroom (A); -1 = nog niet geschreven (na opstart
-  # schrijft de eerste apply_mode dus altijd, zodat een blijvende 0 hersteld wordt).
-  - id: g_dis_written
-    type: int
-    restore_value: false
-    initial_value: '-1'
 
 
   # battery_soc_hires (zie aldaar): ampère-telling (P/V) die alleen bij de BMS-eindpunten
@@ -1029,7 +1015,8 @@ number:
   # Max. ontlaadstroom (0,1A). 0 blokkeert ontladen in elke Solis-modus (getest 30-10: 330W
   # ontladen → 0, net nam de huislast over binnen 6s). Waarschijnlijk blijvend opgeslagen
   # (spec zegt niet "Not save in Flash", anders dan 43130/43131): alleen schrijven bij een
-  # wijziging, readback in de 5min-check.
+  # wijziging t.o.v. de gelezen registerwaarde (elke 5 min gelezen; na een schrijfactie
+  # publiceert de number de nieuwe waarde zelf).
   - platform: modbus_controller
     modbus_controller_id: solis
     id: bat_max_discharge_reg
@@ -1146,12 +1133,6 @@ interval:
           }
           ESP_LOGI("nexus", "Config: RC timeout → 2 min");
           write_reg(id(rc_timeout_reg), 2);
-          // Ontlaadstroom: readback tegen wat apply_mode het laatst schreef.
-          if (id(g_dis_written) >= 0 && id(bat_max_discharge_reg).has_state() &&
-              (int)id(bat_max_discharge_reg).state != id(g_dis_written) * 10) {
-            ESP_LOGW("nexus", "Config: max ontlaadstroom %.0f → %dA", id(bat_max_discharge_reg).state / 10.0f, id(g_dis_written));
-            write_reg(id(bat_max_discharge_reg), id(g_dis_written) * 10);
-          }
 
   # apply_mode herberekent het setpoint (charge/discharge: SOC-gap/marge/deadline) én
   # herbevestigt zo nodig RC Grid Adjustment (43132) — zie het script zelf voor de
@@ -1215,17 +1196,12 @@ script:
             n->make_call().set_value(val).perform();
           };
           std::string mode = id(ems_mode_select).current_option();
-          // Max. ontlaadstroom (43118) alleen bij een wijziging schrijven (flash), zie bat_max_discharge_reg.
-          auto set_discharge = [](int amps) {
-            if (amps == id(g_dis_written)) return;
-            id(bat_max_discharge_reg).make_call().set_value(amps * 10.0f).perform();
-            id(g_dis_written) = amps;
-            ESP_LOGI("nexus", "Max ontlaadstroom → %dA", amps);
-          };
+          // Max. ontlaadstroom (43118) buiten charge weer open; het register is de waarheid, schrijven
+          // alleen bij afwijking (flash). Dicht gaat hij in charge, zie verderop.
+          if (mode != "charge" && id(bat_max_discharge_reg).state != ${battery_max_discharge_a} * 10)
+            write_reg(id(bat_max_discharge_reg), ${battery_max_discharge_a} * 10);
 
           if (mode == "hold") {
-            id(g_dis_allow) = true;
-            set_discharge(${battery_max_discharge_a});
             id(g_force_charge) = false;
             write_reg(id(rc_charge_power_reg), 0);
             write_reg(id(rc_force_mode_reg), 1);
@@ -1341,16 +1317,12 @@ script:
           // net nooit onder 0. Met de RC-sturing alleen pendelde de accu daarbij ±2-3kW (setpoint
           // volgt de huislast pas na 30s) en ontlaadde hij bij elke kleine overschrijding van het
           // doel. Met ontlaadstroom 0 kan de Solis niet ontladen: huislast via het net, PV-overschot
-          // blijft de accu in. Alleen als de SOC ruim boven het doel ligt mag hij leveren, tot het
-          // doel. Zonder geldige SOC: geblokkeerd. Overige modi: vrij.
-          if (mode == "charge") {
-            if (soc < 0.5f)                id(g_dis_allow) = false;
-            else if (id(g_dis_allow))      { if (soc <= tgt_soc) id(g_dis_allow) = false; }
-            else if (soc > tgt_soc + ${discharge_band_pp}f) id(g_dis_allow) = true;
-          } else {
-            id(g_dis_allow) = true;
-          }
-          set_discharge(id(g_dis_allow) ? ${battery_max_discharge_a} : 0);
+          // blijft de accu in. Latch (user 30-10): in charge mag hij leveren zolang de SOC boven het
+          // doel ligt; eenmaal op of onder het doel (of zonder geldige SOC) blijft ontladen dicht
+          // tot een andere mode (het register zelf onthoudt dat). Geen hysterese, dus geen
+          // heen-en-weer schrijven. Zonder geldige SOC is soc -1, dus ook dicht.
+          if (mode == "charge" && soc <= tgt_soc && id(bat_max_discharge_reg).state != 0)
+            write_reg(id(bat_max_discharge_reg), 0);
 
           // Uit force charge: 43135 expliciet uit. 43132 = 1 zet force in de Solis ook uit, maar
           // onder RC_THRESHOLD_W wordt 43132 niet geschreven en liep force door tot de RC-timeout.
@@ -1379,7 +1351,7 @@ script:
           if (mode == "charge" || mode == "discharge") {
             ESP_LOGI("nexus", "%s tgt=%.0fW R=%.0fW res=%.0fW adj=%.0fW sp=%d soc=%.1f%%/%.1f%% imax=%.1fA cap=%.0fW rc=%s dis=%dA",
                       mode.c_str(), tgt_w, rate_w, res_w, adjusted_w, (int)sp, soc, tgt_soc, i_max,
-                      phase_cap, rc_on ? "on" : "lapse", id(g_dis_written));
+                      phase_cap, rc_on ? "on" : "lapse", (int)(id(bat_max_discharge_reg).state / 10.0f));
           } else {
             ESP_LOGI("nexus", "%s tgt=%.0fW adj=%.0fW sp=%d rc=%s",
                       mode.c_str(), tgt_w, adjusted_w, (int)sp, rc_on ? "on" : "lapse");
