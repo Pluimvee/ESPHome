@@ -125,11 +125,6 @@ globals:
     type: uint32_t
     restore_value: false
     initial_value: '0'
-  # Laadt de Solis nu via RC Force Charge (43135/43136) i.p.v. RC Grid Adjustment? Zie apply_mode.
-  - id: g_force_charge
-    type: bool
-    restore_value: false
-    initial_value: 'false'
 
 
   # battery_soc_hires (zie aldaar): ampère-telling (P/V) die alleen bij de BMS-eindpunten
@@ -623,7 +618,7 @@ sensor:
         - if:
             condition:
               lambda: |-
-                return id(g_force_charge) &&
+                return id(rc_force_mode_reg).state == 1 &&
                        std::max(x, std::max(id(grid_current_a).state, id(grid_current_b).state)) > 25.0f;
             then:
               - script.execute: apply_mode
@@ -720,6 +715,47 @@ sensor:
       then:
         - lambda: |-
             id(g_base_energy_kwh) = ${battery_capacity_kwh} * x / 100.0f;
+
+  # Brug-registers voor het holding-leesblok 43110-43140 (31 registers, één FC03 per 5 min).
+  # ESPHome voegt alleen exact aansluitende registers samen; zonder deze bruggen waren 43110,
+  # 43118, 43132-43133, 43135-43136 en 43140 zes losse reads. Sensoren, geen numbers: een
+  # number met register_count > 1 zou bij schrijven ook zoveel registers schrijven (FC10).
+  # Alleen lezen, waarde ongebruikt.
+  - platform: modbus_controller
+    modbus_controller_id: solis
+    id: holding_bridge_43111
+    internal: true
+    register_type: holding
+    address: 43111
+    value_type: U_WORD
+    register_count: 7   # 43111-43117
+    skip_updates: 300
+  - platform: modbus_controller
+    modbus_controller_id: solis
+    id: holding_bridge_43119
+    internal: true
+    register_type: holding
+    address: 43119
+    value_type: U_WORD
+    register_count: 13  # 43119-43131
+    skip_updates: 300
+  - platform: modbus_controller
+    modbus_controller_id: solis
+    id: holding_bridge_43134
+    internal: true
+    register_type: holding
+    address: 43134
+    value_type: U_WORD
+    skip_updates: 300
+  - platform: modbus_controller
+    modbus_controller_id: solis
+    id: holding_bridge_43137
+    internal: true
+    register_type: holding
+    address: 43137
+    value_type: U_WORD
+    register_count: 3   # 43137-43139
+    skip_updates: 300
 
   # Accucapaciteit volgens spec — vaste waarde uit de substitutions, alleen gepubliceerd
   # zodat HA/AppDaemon de aanname kan zien. Geen input meer: hij komt overeen met de
@@ -968,10 +1004,11 @@ number:
   # perform() aanroepen (vanuit de 5s lambda), niet direct bij waardeverandering vanuit HA.
   # De timing is dus volledig in eigen beheer, net als de vroegere write_reg helper.
   #
-  # Adresblokken (ESPHome batcht aangrenzende registers in één FC03 request):
-  #   43029         → los request (gap van 81 t.o.v. 43110)
-  #   43110..43140  → één request (span 31, bevat config + RC registers)
-  #   43282         → los request
+  # Adresblokken (ESPHome voegt alleen exact aansluitende registers samen tot één FC03 request):
+  #   43029         → los request, elke 5 min
+  #   43110..43140  → één request van 31 registers, elke 5 min (config + RC + 43118; gaten
+  #                   gevuld met holding_bridge_* sensoren, zie aldaar)
+  #   43282         → los request, elk uur
 
   # Config registers: read every 5 min to detect drift, write when value differs
   - platform: modbus_controller
@@ -1015,8 +1052,8 @@ number:
   # Max. ontlaadstroom (0,1A). 0 blokkeert ontladen in elke Solis-modus (getest 30-10: 330W
   # ontladen → 0, net nam de huislast over binnen 6s). Waarschijnlijk blijvend opgeslagen
   # (spec zegt niet "Not save in Flash", anders dan 43130/43131): alleen schrijven bij een
-  # wijziging t.o.v. de gelezen registerwaarde (elke 5 min gelezen; na een schrijfactie
-  # publiceert de number de nieuwe waarde zelf).
+  # wijziging t.o.v. de gelezen registerwaarde (elke 5 min gelezen, zie het leesblok
+  # 43110-43140 bij holding_bridge_*).
   - platform: modbus_controller
     modbus_controller_id: solis
     id: bat_max_discharge_reg
@@ -1029,7 +1066,9 @@ number:
     internal: true
     skip_updates: 300
 
-  # RC operation registers: written by control loop via perform(), read infrequently (skip_updates=3600)
+  # RC operation registers: geschreven door apply_mode via perform(), teruggelezen in het
+  # leesblok 43110-43140 (elke 5 min). ModbusNumber publiceert bij een schrijfactie direct de
+  # nieuwe waarde (optimistisch, vóór de bevestiging); alleen het teruglezen is echte terugkoppeling.
   # output zou semantisch beter passen (write-only) maar ondersteunt geen raw integer waarden
   - platform: modbus_controller
     modbus_controller_id: solis
@@ -1041,8 +1080,10 @@ number:
     max_value: 1000
     step: 1
     internal: true
-    skip_updates: 3600
+    skip_updates: 300
 
+  # Force-toestand van de Solis; apply_mode leest hem als waarheid (geen eigen kopie). De Solis
+  # zet hem zelf op 0 bij 43132 = 1 of na de RC-timeout.
   - platform: modbus_controller
     modbus_controller_id: solis
     id: rc_force_mode_reg
@@ -1053,11 +1094,9 @@ number:
     max_value: 3
     step: 1
     internal: true
-    skip_updates: 3600
+    skip_updates: 300
 
   # RC Grid Adjustment ON/OFF — geschreven door apply_mode, zie RC_THRESHOLD_W-logica daar.
-  # Debug-zichtbaarheid (name + skip_updates:10) is verwijderd na afronding van de RC-timeout-
-  # lapse-test; weer internal + trage cadans zoals de overige RC-registers.
   - platform: modbus_controller
     modbus_controller_id: solis
     id: rc_grid_adj_reg
@@ -1068,7 +1107,7 @@ number:
     max_value: 1
     step: 1
     internal: true
-    skip_updates: 3600
+    skip_updates: 300
 
   - platform: modbus_controller
     modbus_controller_id: solis
@@ -1085,7 +1124,7 @@ number:
     max_value: 1000
     step: 1
     internal: true
-    skip_updates: 3600
+    skip_updates: 300
 
   - platform: modbus_controller
     modbus_controller_id: solis
@@ -1202,7 +1241,6 @@ script:
             write_reg(id(bat_max_discharge_reg), ${battery_max_discharge_a} * 10);
 
           if (mode == "hold") {
-            id(g_force_charge) = false;
             write_reg(id(rc_charge_power_reg), 0);
             write_reg(id(rc_force_mode_reg), 1);
             ESP_LOGI("nexus", "Hold mode");
@@ -1306,8 +1344,8 @@ script:
               // zelf, dus net = residual + laadvermogen moet onder phase_cap blijven. residual
               // bevat het laadvermogen niet (DC-zijde, PBI-012), dus geen terugkoppeling.
               if (mode == "charge" && !std::isnan(phase_cap)) {
-                force = id(g_force_charge) ? (want_w >= FORCE_OFF_W)
-                                           : (want_w > FORCE_ON_W && left_ms > FORCE_ENTRY_CUTOFF_MS);
+                force = (id(rc_force_mode_reg).state == 1) ? (want_w >= FORCE_OFF_W)
+                                                           : (want_w > FORCE_ON_W && left_ms > FORCE_ENTRY_CUTOFF_MS);
                 if (force) force_w = std::max(0.0f, std::min(rate_w, std::min(MAX_CHARGE_W, phase_cap - res)));
               }
             }
@@ -1324,10 +1362,10 @@ script:
           if (mode == "charge" && soc <= tgt_soc && id(bat_max_discharge_reg).state != 0)
             write_reg(id(bat_max_discharge_reg), 0);
 
-          // Uit force charge: 43135 expliciet uit. 43132 = 1 zet force in de Solis ook uit, maar
-          // onder RC_THRESHOLD_W wordt 43132 niet geschreven en liep force door tot de RC-timeout.
-          if (id(g_force_charge) && !force) write_reg(id(rc_force_mode_reg), 0);
-          id(g_force_charge) = force;
+          // Geen force (ook na hold): 43135 expliciet uit; het register is de waarheid. 43132 = 1 zet
+          // force in de Solis ook uit, maar onder RC_THRESHOLD_W wordt 43132 niet geschreven en liep
+          // force door tot de RC-timeout. Na een herstart is het register onbekend: één keer 0.
+          if (!force && id(rc_force_mode_reg).state != 0) write_reg(id(rc_force_mode_reg), 0);
 
           if (force) {
             // Zoals hold: 43132/43133 niet aanraken (43132 = 1 zet force uit). Elke ronde

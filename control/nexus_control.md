@@ -281,11 +281,11 @@ waar de Solis een vast **accuvermogen** aanhoudt en het net de rest levert.
 
 ```
 want    = residual + R                              # zoals hierboven
-force   = want > 8000 en resttijd > 3 min   (was force: want >= 5000)    # hysterese, user 28-10
+force   = want > 8000 en resttijd > 3 min   (43135 = 1: want >= 5000)    # hysterese, user 28-10
           alleen in charge, vóór het doel, en met bekende fasestroom (phase_cap ≠ NAN)
 force_w = clamp(min(R, 10000, phase_cap − residual), ≥ 0)
 force:  43136 = force_w/10 ; 43135 = 1 ; 43132/43133 niet schrijven ; return
-uit:    43135 = 0 (eenmalig), daarna het gewone RC-pad
+geen force (ook na hold) en 43135 ≠ 0:  43135 = 0, daarna het gewone RC-pad
 ```
 
 - **Fasegrens zelf bewaken**: in force begrenst de Solis het net niet. `phase_cap − residual` is het
@@ -734,7 +734,25 @@ Requests (na het aaneensluiten van de ranges, zie [Read registers](#read-registe
 | 33252–33256 fasestromen | 11s |
 | 33161–33166 en 33283–33286 energietellers | 60s |
 | 33213 overdischarge mirror | 15 min |
+| 43110–43140 holding-blok (FC03, 31 registers) | 5 min |
+| 43029 CT-richting (FC03) | 5 min |
+| 43282 RC-timeout (FC03) | 1 uur |
 | writes 43133/43132 | 30s |
+
+**Solis-registers zijn de waarheid** (user 30-10): de firmware houdt geen eigen kopie bij van wat er in
+een Solis-register staat, maar leest het register terug. Let op: `ModbusNumber::control` publiceert de
+nieuwe waarde al bij het in de wachtrij zetten (optimistisch, vóór de bevestiging van de omvormer); pas de
+volgende read is echte terugkoppeling. Daarom worden de stuurregisters (43118, 43132/43133, 43135/43136)
+elke 5 min teruggelezen, in één blok 43110–43140: ESPHome voegt alleen exact aansluitende registers samen,
+dus de gaten (43111–43117, 43119–43131, 43134, 43137–43139) zijn gevuld met interne lees-sensoren
+`holding_bridge_*` (`register_count`). Sensoren, geen numbers: een number met `register_count` > 1 schrijft
+ook zoveel registers. Gecontroleerd 30-10: de Solis levert het blok van 31 registers in één read (spec: max
+50 per frame). Voorheen waren dit zes losse reads (43110, 43118, 43140 elke 5 min; 43132–43133 en
+43135–43136 elk uur).
+
+- `g_force_charge` (eigen kopie van "force actief") is vervangen door `rc_force_mode_reg` (43135). Gevolg:
+  ook na `hold` zet de eerste ronde in een andere mode force meteen uit (43135 = 0), in plaats van te
+  wachten op de RC-timeout.
 
 - **Direct bij wijziging**: `select.control_mode` en beide `number`-entiteiten roepen `apply_mode` synchroon aan via `on_value` (alle drie roepen bovendien eerst `arm_command` aan, zie [Opdrachtvenster](#opdrachtvenster-15-min-en-safe-mode-pbi-046)).
 - **interval 30s** → `apply_mode` (setpoint + eventueel RC-herbevestiging, zie [Modi](#modi)) — dit is tevens de keepalive tegen de RC-timeout van de Solis (ingesteld op 2 minuten via 43282, dus 4× marge).
