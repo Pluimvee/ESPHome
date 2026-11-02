@@ -414,6 +414,16 @@ sensor:
     state_class: measurement
     accuracy_decimals: 0
     skip_updates: 5
+    # Voedt beide 30s-gemiddelden op hetzelfde moment, één keer per read: 33151 komt na 33149 in
+    # hetzelfde FC04-antwoord, dus beide vensters bevatten exact dezelfde reads. Met twee eigen
+    # 5s-timers liepen ze een sample uit de pas: bij een stap 3,1kW → 760W gaf dat ±400W fout.
+    on_value:
+      then:
+        - lambda: |-
+            if (std::isnan(id(battery_power_raw).state) || !id(battery_direction_raw).has_state()) return;
+            float b = fabsf(id(battery_power_raw).state);
+            id(battery_power_avg).publish_state(id(battery_direction_raw).state >= 0.5f ? b : -b);
+            id(grid_port_power_avg).publish_state(x);
 
   # Internal 1Hz grid meter reader — accumulates metrics, does NOT publish raw to HA recorder
   # HA-visible throttled copy is the meter_power template sensor below
@@ -558,42 +568,35 @@ sensor:
               if (x < 0.0f) return std::string("charging");
               return std::string("standby");
 
-  # Minuutgemiddelden van accu-DC en AC-poort voor verlies en rendement (user 02-11). Per read
+  # 30s-gemiddelden van accu-DC en AC-poort voor verlies en rendement (user 02-11). Per read
   # schommelt DC − AC ±50W (33149 springt in ~43W-stappen, en DC en AC lopen in de Solis niet
   # exact gelijk op): 19:25-20:09 verlies 56-151W bij ~900W, en een paar keer negatief. Daarom
   # de ingangen middelen, niet het verlies of rendement achteraf: dan is het verlies het verschil
-  # van de gemiddelden en het rendement de verhouding van de energie over die minuut. Ruw blijft
-  # in battery_power / grid_port_power (regeling, residual, HA). Zonder data geen state ({}),
-  # zodat er geen NAN in het venster komt.
+  # van de gemiddelden en het rendement de verhouding van de energie over die 30s. Ruw blijft
+  # in battery_power / grid_port_power (regeling, residual, HA). Gevoed vanuit on_value van
+  # grid_port_power (zie daar), zodat beide vensters dezelfde reads bevatten.
   - platform: template
-    id: battery_power_avg
+    id: battery_power_avg        # + = ontladen
     internal: true
-    update_interval: 5s
-    lambda: |-
-      if (std::isnan(id(battery_power_raw).state) || !id(battery_direction_raw).has_state()) return {};
-      float b = fabsf(id(battery_power_raw).state);
-      return id(battery_direction_raw).state >= 0.5f ? b : -b;  // + = ontladen
+    update_interval: never
     filters:
       - sliding_window_moving_average:
-          window_size: 12   # 12 × 5s = 1 min
+          window_size: 5    # 5 reads × 6s = 30s (user 02-11; was 1 min)
           send_every: 1
 
   - platform: template
-    id: grid_port_power_avg
+    id: grid_port_power_avg      # + = export
     internal: true
-    update_interval: 5s
-    lambda: |-
-      if (std::isnan(id(grid_port_power).state)) return {};
-      return id(grid_port_power).state;                        // + = export
+    update_interval: never
     filters:
       - sliding_window_moving_average:
-          window_size: 12
+          window_size: 5
           send_every: 1
 
   # Omvormerverlies (PBI-080): omzetting + stand-by = DC (+ = ontladen) − AC-poort (+ = export),
-  # over de minuutgemiddelden. Klopt in elke richting, ook bij tegengestelde stromen (accu levert
+  # over de 30s-gemiddelden. Klopt in elke richting, ook bij tegengestelde stromen (accu levert
   # 50W, poort neemt 30W af: 80W). Negatief kan niet (user 02-11): 0 en een ERROR-log; over een
-  # minuut gemiddeld wijst dat op een echt probleem, niet op ruis.
+  # 30s gemiddeld wijst dat op een echt probleem, niet op ruis.
   - platform: template
     id: inverter_loss
     name: "Inverter Loss"
@@ -608,14 +611,14 @@ sensor:
       if (std::isnan(b) || std::isnan(p)) return NAN;
       float loss = b - p;
       if (loss < 0.0f) {
-        ESP_LOGE("nexus", "Inverter Loss negatief: %.0fW (accu %.0fW, poort %.0fW, 1 min gemiddeld)",
+        ESP_LOGE("nexus", "Inverter Loss negatief: %.0fW (accu %.0fW, poort %.0fW, 30s gemiddeld)",
                  loss, b, p);
         return 0.0f;
       }
       return loss;
 
   # Omvormerrendement (user 02-11): laden = DC in de accu / AC uit het net, ontladen = AC naar
-  # het net / DC uit de accu, over de minuutgemiddelden (= energieverhouding over die minuut).
+  # het net / DC uit de accu, over de 30s-gemiddelden (= energieverhouding over die 30s).
   # Alleen als beide dezelfde kant op wijzen; in rust of bij tegengestelde stromen (stand-by)
   # bestaat er geen rendement: NAN. Boven 100% is een negatief verlies (daar gelogd): max 100.
   - platform: template
