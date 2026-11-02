@@ -25,8 +25,6 @@ substitutions:
   # normale stap is ~1pp; de BMS blijft op vaste plekken hangen (89-90 bij laden, 19-21
   # bij ontladen). Sinds v3 alleen nog diagnose (bms_stalled), geen invloed op hires.
   hires_stall_pp: "1.5"
-  # Diagnosevlag als hires meer dan dit (pp) van de BMS afwijkt; er wordt niet gecorrigeerd.
-  hires_deviation_pp: "10"
   # Max. ontlaadstroom van de Solis (43118, A) buiten het blokkeren in charge; gelijk aan
   # de stand van 30-10-2026 (43117 laden en 43118 ontladen beide 50,0 A).
   battery_max_discharge_a: "50"
@@ -301,7 +299,7 @@ sensor:
   - platform: modbus_controller
     modbus_controller_id: solis
     id: battery_soc
-    name: "Battery SOC"
+    name: "Battery BMS SOC"
     icon: "mdi:battery-medium"
     register_type: read
     address: 33139
@@ -406,7 +404,7 @@ sensor:
   - platform: modbus_controller
     modbus_controller_id: solis
     id: grid_port_power
-    name: "Inverter Power"
+    name: "Inverter Port Power"
     icon: "mdi:lightning-bolt-circle"
     register_type: read
     address: 33151
@@ -535,7 +533,7 @@ sensor:
       return id(meter_power_raw).state + (id(battery_direction_raw).state >= 0.5f ? b : -b);
 
   # Accuvermogen aan de DC-kant (PBI-080): 33149 met het teken uit 33135, + = ontladen (zoals
-  # Inverter Power). Vervangt solis_s6_eh3p_battery_power_net in de EMS.
+  # Inverter Port Power). Vervangt solis_s6_eh3p_battery_power_net in de EMS.
   - platform: template
     id: battery_power
     name: "Battery Power"
@@ -549,7 +547,7 @@ sensor:
       if (std::isnan(id(battery_power_raw).state) || !id(battery_direction_raw).has_state()) return NAN;
       float b = fabsf(id(battery_power_raw).state);
       return id(battery_direction_raw).state >= 0.5f ? b : -b;
-    # Inverter Status uit het DC-vermogen: 33149 is in rust exact 0 (kleinste stap ~42W), dus
+    # Battery Status uit het DC-vermogen: 33149 is in rust exact 0 (kleinste stap ~42W), dus
     # geen marge nodig. Tot 02-11 uit de AC-poort met ±150W, vanwege de stand-by (~80W) daar.
     on_value:
       then:
@@ -586,6 +584,30 @@ sensor:
         return 0.0f;
       }
       return loss;
+
+  # Omvormerrendement (user 02-11): laden = DC in de accu / AC uit het net, ontladen = AC naar
+  # het net / DC uit de accu. Alleen als accu en poort dezelfde kant op stromen; in rust of bij
+  # tegengestelde stromen (stand-by) bestaat er geen rendement: NAN. Dezelfde ruwe registers als
+  # inverter_loss; boven 100% is een negatief verlies (daar gelogd), dus begrensd op 100.
+  - platform: template
+    id: inverter_efficiency
+    name: "Inverter Efficiency"
+    icon: "mdi:percent"
+    unit_of_measurement: "%"
+    state_class: measurement
+    accuracy_decimals: 1
+    update_interval: 5s
+    lambda: |-
+      if (std::isnan(id(battery_power_raw).state) || !id(battery_direction_raw).has_state() ||
+          std::isnan(id(grid_port_power).state)) return NAN;
+      float b = fabsf(id(battery_power_raw).state);
+      if (id(battery_direction_raw).state < 0.5f) b = -b;  // laden
+      float p = id(grid_port_power).state;
+      float eff;
+      if (b < 0.0f && p < 0.0f)      eff = b / p;   // laden: |DC| / |AC|
+      else if (b > 0.0f && p > 0.0f) eff = p / b;   // ontladen: AC / DC
+      else return NAN;
+      return std::min(100.0f, eff * 100.0f);
 
   # Hoger-resolutie SOC-schatting (v3, 28-10-2026, PBI-044). Ampère-telling op P/V
   # (33149/33133) die tussen de eindpunten los van de BMS loopt. De state wordt bijgewerkt
@@ -1001,27 +1023,17 @@ binary_sensor:
   # hires_stall_pp). Sinds v3 zonder invloed op hires.
   - platform: template
     id: bms_stalled
-    name: "BMS Stalled"
+    name: "Battery BMS SOC Stalled"
     icon: "mdi:battery-alert"
     lambda: |-
       return id(g_batt_soc_last_raw) >= ${hires_floor_pct}.0f + 1.0f
           && id(g_batt_soc_last_raw) <= ${hires_top_pct}.0f - 1.0f
           && fabsf(id(g_e_step)) > ${hires_stall_pp}f;
 
-  # Diagnose (PBI-044): hires wijkt meer dan hires_deviation_pp van de BMS af. Er wordt niet
-  # gecorrigeerd; een aanhoudende vlag wijst op een fout in de telling of de BMS.
-  - platform: template
-    id: hires_deviation
-    name: "SOC HiRes Deviation"
-    icon: "mdi:battery-unknown"
-    lambda: |-
-      return id(g_batt_soc_last_raw) >= 0.0f
-          && fabsf(id(g_hires) - id(g_batt_soc_last_raw)) > ${hires_deviation_pp}.0f;
-
 text_sensor:
   - platform: template
     id: controller_mode_sensor
-    name: "Inverter Status"
+    name: "Battery Status"   # tot 02-11 "Inverter Status"
     icon: "mdi:state-machine"
     update_interval: never
 

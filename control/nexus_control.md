@@ -136,24 +136,24 @@ Wordt als vaste waarde **33** geschreven (geen read-modify-write):
 | `sensor.command_timer` | sensor | Resterende seconden van het opdrachtvenster (10s); 0 = safe mode — zie [Opdrachtvenster](#opdrachtvenster-15-min-en-safe-mode-pbi-046). Het bestaan van de sensor vertelt de EMS-strategie dat de firmware kwartier-opdrachten verwacht |
 | `number.target_soc` | number | Doel-SOC in %, 7…100, stap 0,1 (EMS rekent met 1 decimaal), default 80 — alleen relevant in charge/discharge |
 | `sensor.battery_capacity` | sensor | Accucapaciteit in kWh — **vaste** waarde (20.48) uit `substitutions`, alleen gepubliceerd ter inzage; geen HA-input meer, zie [Energieboekhouding](#energieboekhouding--capaciteit-baseremainingusabletarget_usable) |
-| `sensor.battery_soc` | sensor | SOC %, ruwe BMS-waarde (1%-resolutie, onregelmatige update) |
+| `sensor.battery_bms_soc` | sensor | SOC %, ruwe BMS-waarde (1%-resolutie, onregelmatige update); tot 02-11 `battery_soc` |
 | `sensor.battery_soc_hires` | sensor | Hoger-resolutie SOC-schatting (2 decimalen, 10s): ampère-telling (P/V) los van de BMS; telling staat uit bij SOC 100 en ≤ 7 (daartussen 7,1 … 99,9), zie [Hoge-resolutie SOC](#hoge-resolutie-soc--coulomb-counting-tussen-bms-updates) |
 | `sensor.battery_soc_offset` | sensor | Diagnose: hires − BMS in pp |
-| `binary_sensor.bms_stalled` | binary | Diagnose: aan tijdens een BMS-stilstand (> 1,5pp energie sinds de laatste BMS-stap) |
-| `binary_sensor.soc_hires_deviation` | binary | Diagnose: aan bij \|hires − BMS\| > 10pp |
+| `binary_sensor.battery_bms_soc_stalled` | binary | Diagnose: aan tijdens een BMS-stilstand (> 1,5pp energie sinds de laatste BMS-stap); tot 02-11 `bms_stalled` |
 | `sensor.base_energy` | sensor | Energie onder de overdischarge-ondergrens (kWh), niet bruikbaar — zie [Energieboekhouding](#energieboekhouding--capaciteit-baseremainingusabletarget_usable) |
 | `sensor.remaining_energy` | sensor | Totale accu-inhoud in kWh, afgeleid van `battery_soc_hires` — zie [Energieboekhouding](#energieboekhouding--capaciteit-baseremainingusabletarget_usable) |
 | `sensor.usable_energy` | sensor | `remaining_energy − base_energy` (kWh) — zie [Energieboekhouding](#energieboekhouding--capaciteit-baseremainingusabletarget_usable) |
 | `sensor.target_usable_energy` | sensor | `target_soc` uitgedrukt in kWh boven de ondergrens; observationeel, nog niet in `apply_mode` verwerkt — zie [Energieboekhouding](#energieboekhouding--capaciteit-baseremainingusabletarget_usable) |
 | `sensor.grid_power` | sensor | Netmeter W (huis-conv: + = import), 5s, HA-visible |
-| `sensor.inverter_power` | sensor | AC grid port W (Solis-conv: + = export) |
+| `sensor.inverter_port_power` | sensor | AC grid port W (Solis-conv: + = export); tot 02-11 `inverter_power` |
 | `sensor.battery_power` | sensor | Accu DC W (33149, teken uit 33135; + = ontladen), 5s. Vervangt `solis_s6_eh3p_battery_power_net` in de EMS (PBI-080) |
 | `sensor.inverter_loss` | sensor | Omvormerverlies W (omzetting + stand-by) = accu-DC − AC-poort, beide + = richting net; klopt ook bij tegengestelde stromen. Negatief kan niet: 0 + `ESP_LOGE` (user 02-11). 5s. Energie via een Riemann-helper in HA (PBI-080) |
+| `sensor.inverter_efficiency` | sensor | Omvormerrendement %: laden = DC-accu / AC-poort, ontladen = AC-poort / DC-accu; NAN in rust of bij tegengestelde stromen; max 100 (user 02-11). Let op: 33149 springt bij laag vermogen vaak in stappen van ~43W, dus onder ~1 kW is één sample grof |
 | `sensor.battery_charge_energy` / `battery_discharge_energy` | sensor | Solis-tellers 33161/33165 (kWh, 0,01, `total_increasing`), 60s. Vervangen `solis_s6_eh3p_total_battery_charge/discharge_energy` in de EMS (PBI-080); `solis_modbus` blijft als analyse- en testtool |
 | `sensor.residual_power` | sensor | Huislast + omvormerverlies minus PV (W), = grid − accu-DC; negatief bij PV-overschot, 5s — zie [Residual power en energie](#residual-power-en-energie) |
 | `sensor.residual_energy` | sensor | Tweezijdige teller (kWh, `state_class: total`) bij `residual_power`, 60s |
 | `sensor.grid_current_a/b/c` | sensor | Netstroom per fase (A), 0.01A-resolutie, ~10s, zie [Netstroom per fase](#netstroom-per-fase-grid_current_ab_c) |
-| `text_sensor.inverter_status` | text | `charging` / `discharging` / `standby`, afgeleid van `battery_power` (DC, in rust exact 0, dus geen drempel; tot 02-11 `inverter_power` met ±150W) |
+| `text_sensor.battery_status` (tot 02-11 `inverter_status`) | text | `charging` / `discharging` / `standby`, afgeleid van `battery_power` (DC, in rust exact 0, dus geen drempel; tot 02-11 `inverter_power` met ±150W) |
 | `text_sensor.grid_status` | text | `import` / `export` / `level`, afgeleid van `grid_power` (drempel ±50W) |
 | `sensor.grid_metric_*` + `text_sensor.grid_metric_histogram` | sensor/text | 15-min venstermetrics, zie [Grid Metrics](#grid-metrics--tumbling-window-15-min) |
 
@@ -411,7 +411,7 @@ dat te grof en te traag.
 
 ```
 substitutions:  hires_top_pct 100, hires_floor_pct 7, hires_ah 50.5, hires_chg_factor 1.013,
-                hires_stall_pp 1.5 (diagnose), hires_deviation_pp 10 (diagnose)
+                hires_stall_pp 1.5 (diagnose)
 globals:        g_hires (pp), g_off (hires − BMS bij de laatste stap, restore_value), g_e_step (diagnose)
 
 battery_power_raw (33149) on_value:
@@ -441,8 +441,8 @@ bijtrekken na de 89%-stilstand en offset-slijtage.
 - **Geen band, geen offsetcorrectie meer**: tussen de eindpunten heeft de BMS geen betere informatie dan
   de telling. `battery_soc_offset` en `bms_stalled` blijven als diagnose (entity-ID's ongewijzigd);
   `battery_soc_offset` is nu live `hires − BMS`.
-- **`binary_sensor.soc_hires_deviation`** (nieuw): aan bij |hires − BMS| > 10 pp. Alleen een vlag, geen
-  correctie.
+- **`binary_sensor.soc_hires_deviation`**: aan bij |hires − BMS| > 10 pp, alleen een vlag. Verwijderd 02-11:
+  nooit aan geweest, geen gebruikers, en `battery_soc_offset` toont dezelfde afwijking als getal.
 - **Vloer 7,1 / plafond 99,9 blijven** (les van 05-09, zie hieronder).
 - **Weg van een eindpunt** begint hires midden in de nieuwe stap: op het eindpunt telt hires niet, dus
   zonder deze regel bleef hires na 7→8 op 7 staan (en na 100→99 op 100 → 99,9).
@@ -609,8 +609,7 @@ implementatie doet nu hetzelfde: `fabs()` van de magnitude, teken expliciet uit 
 |---|---|---|---|
 | `sensor.battery_soc_hires` | sensor | 0.01%, elke 10s | `NAN` zolang er nog geen BMS-melding is geweest; ampère-telling los van de BMS (v3). Bij SOC 100 en ≤ 7 exact de BMS-waarde, daartussen [7,1 … 99,9] |
 | `sensor.battery_soc_offset` | sensor | 0.01pp, elke 10s | Diagnose: live `hires − BMS` |
-| `binary_sensor.bms_stalled` | binary | live | Diagnose: aan zolang er sinds de laatste BMS-stap meer dan 1,5pp energie is gestroomd |
-| `binary_sensor.soc_hires_deviation` | binary | live | Diagnose: aan bij \|hires − BMS\| > 10pp |
+| `binary_sensor.battery_bms_soc_stalled` | binary | live | Diagnose: aan zolang er sinds de laatste BMS-stap meer dan 1,5pp energie is gestroomd |
 
 ---
 
