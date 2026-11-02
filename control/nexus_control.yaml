@@ -558,11 +558,42 @@ sensor:
               if (x < 0.0f) return std::string("charging");
               return std::string("standby");
 
-  # Omvormerverlies (PBI-080): omzetting + stand-by = DC (+ = ontladen) − AC-poort (+ = export).
-  # Klopt in elke richting, ook bij tegengestelde stromen (accu levert 50W, poort neemt 30W af:
-  # 80W). Uit de ruwe registers (hetzelfde FC04-blok), niet uit de template battery_power: die
-  # heeft een eigen timer en kan een read achterlopen. Negatief kan niet (user 02-11): 0 en een
-  # ERROR-log.
+  # Minuutgemiddelden van accu-DC en AC-poort voor verlies en rendement (user 02-11). Per read
+  # schommelt DC − AC ±50W (33149 springt in ~43W-stappen, en DC en AC lopen in de Solis niet
+  # exact gelijk op): 19:25-20:09 verlies 56-151W bij ~900W, en een paar keer negatief. Daarom
+  # de ingangen middelen, niet het verlies of rendement achteraf: dan is het verlies het verschil
+  # van de gemiddelden en het rendement de verhouding van de energie over die minuut. Ruw blijft
+  # in battery_power / grid_port_power (regeling, residual, HA). Zonder data geen state ({}),
+  # zodat er geen NAN in het venster komt.
+  - platform: template
+    id: battery_power_avg
+    internal: true
+    update_interval: 5s
+    lambda: |-
+      if (std::isnan(id(battery_power_raw).state) || !id(battery_direction_raw).has_state()) return {};
+      float b = fabsf(id(battery_power_raw).state);
+      return id(battery_direction_raw).state >= 0.5f ? b : -b;  // + = ontladen
+    filters:
+      - sliding_window_moving_average:
+          window_size: 12   # 12 × 5s = 1 min
+          send_every: 1
+
+  - platform: template
+    id: grid_port_power_avg
+    internal: true
+    update_interval: 5s
+    lambda: |-
+      if (std::isnan(id(grid_port_power).state)) return {};
+      return id(grid_port_power).state;                        // + = export
+    filters:
+      - sliding_window_moving_average:
+          window_size: 12
+          send_every: 1
+
+  # Omvormerverlies (PBI-080): omzetting + stand-by = DC (+ = ontladen) − AC-poort (+ = export),
+  # over de minuutgemiddelden. Klopt in elke richting, ook bij tegengestelde stromen (accu levert
+  # 50W, poort neemt 30W af: 80W). Negatief kan niet (user 02-11): 0 en een ERROR-log; over een
+  # minuut gemiddeld wijst dat op een echt probleem, niet op ruis.
   - platform: template
     id: inverter_loss
     name: "Inverter Loss"
@@ -573,22 +604,20 @@ sensor:
     accuracy_decimals: 0
     update_interval: 5s
     lambda: |-
-      if (std::isnan(id(battery_power_raw).state) || !id(battery_direction_raw).has_state() ||
-          std::isnan(id(grid_port_power).state)) return NAN;
-      float b = fabsf(id(battery_power_raw).state);
-      if (id(battery_direction_raw).state < 0.5f) b = -b;  // laden
-      float loss = b - id(grid_port_power).state;
+      float b = id(battery_power_avg).state, p = id(grid_port_power_avg).state;
+      if (std::isnan(b) || std::isnan(p)) return NAN;
+      float loss = b - p;
       if (loss < 0.0f) {
-        ESP_LOGE("nexus", "Inverter Loss negatief: %.0fW (accu %.0fW, poort %.0fW)",
-                 loss, b, id(grid_port_power).state);
+        ESP_LOGE("nexus", "Inverter Loss negatief: %.0fW (accu %.0fW, poort %.0fW, 1 min gemiddeld)",
+                 loss, b, p);
         return 0.0f;
       }
       return loss;
 
   # Omvormerrendement (user 02-11): laden = DC in de accu / AC uit het net, ontladen = AC naar
-  # het net / DC uit de accu. Alleen als accu en poort dezelfde kant op stromen; in rust of bij
-  # tegengestelde stromen (stand-by) bestaat er geen rendement: NAN. Dezelfde ruwe registers als
-  # inverter_loss; boven 100% is een negatief verlies (daar gelogd), dus begrensd op 100.
+  # het net / DC uit de accu, over de minuutgemiddelden (= energieverhouding over die minuut).
+  # Alleen als beide dezelfde kant op wijzen; in rust of bij tegengestelde stromen (stand-by)
+  # bestaat er geen rendement: NAN. Boven 100% is een negatief verlies (daar gelogd): max 100.
   - platform: template
     id: inverter_efficiency
     name: "Inverter Efficiency"
@@ -598,11 +627,8 @@ sensor:
     accuracy_decimals: 1
     update_interval: 5s
     lambda: |-
-      if (std::isnan(id(battery_power_raw).state) || !id(battery_direction_raw).has_state() ||
-          std::isnan(id(grid_port_power).state)) return NAN;
-      float b = fabsf(id(battery_power_raw).state);
-      if (id(battery_direction_raw).state < 0.5f) b = -b;  // laden
-      float p = id(grid_port_power).state;
+      float b = id(battery_power_avg).state, p = id(grid_port_power_avg).state;
+      if (std::isnan(b) || std::isnan(p)) return NAN;
       float eff;
       if (b < 0.0f && p < 0.0f)      eff = b / p;   // laden: |DC| / |AC|
       else if (b > 0.0f && p > 0.0f) eff = p / b;   // ontladen: AC / DC

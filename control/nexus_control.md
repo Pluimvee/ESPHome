@@ -147,8 +147,16 @@ Wordt als vaste waarde **33** geschreven (geen read-modify-write):
 | `sensor.grid_power` | sensor | Netmeter W (huis-conv: + = import), 5s, HA-visible |
 | `sensor.inverter_port_power` | sensor | AC grid port W (Solis-conv: + = export); tot 02-11 `inverter_power` |
 | `sensor.battery_power` | sensor | Accu DC W (33149, teken uit 33135; + = ontladen), 5s. Vervangt `solis_s6_eh3p_battery_power_net` in de EMS (PBI-080) |
-| `sensor.inverter_loss` | sensor | Omvormerverlies W (omzetting + stand-by) = accu-DC − AC-poort, beide + = richting net; klopt ook bij tegengestelde stromen. Negatief kan niet: 0 + `ESP_LOGE` (user 02-11). 5s. Energie via een Riemann-helper in HA (PBI-080) |
-| `sensor.inverter_efficiency` | sensor | Omvormerrendement %: laden = DC-accu / AC-poort, ontladen = AC-poort / DC-accu; NAN in rust of bij tegengestelde stromen; max 100 (user 02-11). Let op: 33149 springt bij laag vermogen vaak in stappen van ~43W, dus onder ~1 kW is één sample grof |
+| `sensor.inverter_loss` | sensor | Omvormerverlies W (omzetting + stand-by) = accu-DC − AC-poort, beide + = richting net, over **minuutgemiddelden** van beide (zie hieronder); klopt ook bij tegengestelde stromen. Negatief: 0 + `ESP_LOGE` (user 02-11). 5s. Energie via een Riemann-helper in HA (PBI-080) |
+| `sensor.inverter_efficiency` | sensor | Omvormerrendement %: laden = DC-accu / AC-poort, ontladen = AC-poort / DC-accu, over dezelfde minuutgemiddelden (= energieverhouding over die minuut); NAN in rust of bij tegengestelde stromen; max 100 (user 02-11) |
+
+**Waarom minuutgemiddelden** (02-11): per read schommelt DC − AC ±50W. 33149 springt in ~43W-stappen,
+en DC en AC lopen in de Solis niet exact gelijk op (de bus is het niet: beide komen uit hetzelfde
+FC04-blok). 19:25–20:09: verlies per sample 56–151W bij ~900W ontladen, en een paar keer negatief
+(rendement 100%). Afkappen per sample telde het verlies te hoog en liet de ERROR-log op ruis afgaan.
+Daarom de ingangen middelen (`battery_power_avg`, `grid_port_power_avg`: interne templates,
+`sliding_window_moving_average` 12 × 5s), niet het verlies of rendement achteraf. `battery_power` en
+`inverter_port_power` blijven ruw.
 | `sensor.battery_charge_energy` / `battery_discharge_energy` | sensor | Solis-tellers 33161/33165 (kWh, 0,01, `total_increasing`), 60s. Vervangen `solis_s6_eh3p_total_battery_charge/discharge_energy` in de EMS (PBI-080); `solis_modbus` blijft als analyse- en testtool |
 | `sensor.residual_power` | sensor | Huislast + omvormerverlies minus PV (W), = grid − accu-DC; negatief bij PV-overschot, 5s — zie [Residual power en energie](#residual-power-en-energie) |
 | `sensor.residual_energy` | sensor | Tweezijdige teller (kWh, `state_class: total`) bij `residual_power`, 60s |
