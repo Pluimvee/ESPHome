@@ -147,10 +147,13 @@ Wordt als vaste waarde **33** geschreven (geen read-modify-write):
 | `sensor.target_usable_energy` | sensor | `target_soc` uitgedrukt in kWh boven de ondergrens; observationeel, nog niet in `apply_mode` verwerkt — zie [Energieboekhouding](#energieboekhouding--capaciteit-baseremainingusabletarget_usable) |
 | `sensor.grid_power` | sensor | Netmeter W (huis-conv: + = import), 5s, HA-visible |
 | `sensor.inverter_power` | sensor | AC grid port W (Solis-conv: + = export) |
+| `sensor.battery_power` | sensor | Accu DC W (33149, teken uit 33135; + = ontladen), 5s. Vervangt `solis_s6_eh3p_battery_power_net` in de EMS (PBI-080) |
+| `sensor.inverter_loss` | sensor | Omvormerverlies W (omzetting + stand-by) = accu-DC − AC-poort, beide + = richting net; klopt ook bij tegengestelde stromen. Negatief kan niet: 0 + `ESP_LOGE` (user 02-11). 5s. Energie via een Riemann-helper in HA (PBI-080) |
+| `sensor.battery_charge_energy` / `battery_discharge_energy` | sensor | Solis-tellers 33161/33165 (kWh, 0,01, `total_increasing`), 60s. Vervangen `solis_s6_eh3p_total_battery_charge/discharge_energy` in de EMS (PBI-080); `solis_modbus` blijft als analyse- en testtool |
 | `sensor.residual_power` | sensor | Huislast + omvormerverlies minus PV (W), = grid − accu-DC; negatief bij PV-overschot, 5s — zie [Residual power en energie](#residual-power-en-energie) |
 | `sensor.residual_energy` | sensor | Tweezijdige teller (kWh, `state_class: total`) bij `residual_power`, 60s |
 | `sensor.grid_current_a/b/c` | sensor | Netstroom per fase (A), 0.01A-resolutie, ~10s, zie [Netstroom per fase](#netstroom-per-fase-grid_current_ab_c) |
-| `text_sensor.inverter_status` | text | `charging` / `discharging` / `standby`, afgeleid van `inverter_power` (drempel ±150W) |
+| `text_sensor.inverter_status` | text | `charging` / `discharging` / `standby`, afgeleid van `battery_power` (DC, in rust exact 0, dus geen drempel; tot 02-11 `inverter_power` met ±150W) |
 | `text_sensor.grid_status` | text | `import` / `export` / `level`, afgeleid van `grid_power` (drempel ±50W) |
 | `sensor.grid_metric_*` + `text_sensor.grid_metric_histogram` | sensor/text | 15-min venstermetrics, zie [Grid Metrics](#grid-metrics--tumbling-window-15-min) |
 

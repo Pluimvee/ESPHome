@@ -416,14 +416,6 @@ sensor:
     state_class: measurement
     accuracy_decimals: 0
     skip_updates: 5
-    on_value:
-      then:
-        - text_sensor.template.publish:
-            id: controller_mode_sensor
-            state: !lambda |-
-              if (x > 150.0f) return std::string("discharging");
-              if (x < -150.0f) return std::string("charging");
-              return std::string("standby");
 
   # Internal 1Hz grid meter reader — accumulates metrics, does NOT publish raw to HA recorder
   # HA-visible throttled copy is the meter_power template sensor below
@@ -542,6 +534,59 @@ sensor:
       float b = fabsf(id(battery_power_raw).state);  // magnitude; richting uit 33135 (1 = discharge)
       return id(meter_power_raw).state + (id(battery_direction_raw).state >= 0.5f ? b : -b);
 
+  # Accuvermogen aan de DC-kant (PBI-080): 33149 met het teken uit 33135, + = ontladen (zoals
+  # Inverter Power). Vervangt solis_s6_eh3p_battery_power_net in de EMS.
+  - platform: template
+    id: battery_power
+    name: "Battery Power"
+    icon: "mdi:battery-charging"
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: |-
+      if (std::isnan(id(battery_power_raw).state) || !id(battery_direction_raw).has_state()) return NAN;
+      float b = fabsf(id(battery_power_raw).state);
+      return id(battery_direction_raw).state >= 0.5f ? b : -b;
+    # Inverter Status uit het DC-vermogen: 33149 is in rust exact 0 (kleinste stap ~42W), dus
+    # geen marge nodig. Tot 02-11 uit de AC-poort met ±150W, vanwege de stand-by (~80W) daar.
+    on_value:
+      then:
+        - text_sensor.template.publish:
+            id: controller_mode_sensor
+            state: !lambda |-
+              if (x > 0.0f) return std::string("discharging");
+              if (x < 0.0f) return std::string("charging");
+              return std::string("standby");
+
+  # Omvormerverlies (PBI-080): omzetting + stand-by = DC (+ = ontladen) − AC-poort (+ = export).
+  # Klopt in elke richting, ook bij tegengestelde stromen (accu levert 50W, poort neemt 30W af:
+  # 80W). Uit de ruwe registers (hetzelfde FC04-blok), niet uit de template battery_power: die
+  # heeft een eigen timer en kan een read achterlopen. Negatief kan niet (user 02-11): 0 en een
+  # ERROR-log.
+  - platform: template
+    id: inverter_loss
+    name: "Inverter Loss"
+    icon: "mdi:heat-wave"
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: |-
+      if (std::isnan(id(battery_power_raw).state) || !id(battery_direction_raw).has_state() ||
+          std::isnan(id(grid_port_power).state)) return NAN;
+      float b = fabsf(id(battery_power_raw).state);
+      if (id(battery_direction_raw).state < 0.5f) b = -b;  // laden
+      float loss = b - id(grid_port_power).state;
+      if (loss < 0.0f) {
+        ESP_LOGE("nexus", "Inverter Loss negatief: %.0fW (accu %.0fW, poort %.0fW)",
+                 loss, b, id(grid_port_power).state);
+        return 0.0f;
+      }
+      return loss;
+
   # Hoger-resolutie SOC-schatting (v3, 28-10-2026, PBI-044). Ampère-telling op P/V
   # (33149/33133) die tussen de eindpunten los van de BMS loopt. De state wordt bijgewerkt
   # in battery_power_raw en battery_soc on_value; deze sensor publiceert alleen.
@@ -650,15 +695,19 @@ sensor:
   # Energietellers voor residual_energy — lage prioriteit, elke 60s (skip_updates 59).
   # Accu: Solis-tellers 33161/33165 (U32, 0,01 kWh — gecontroleerd tegen de HA-integratie).
   # Meten niet exact op de AC-poort (iets boven de BMS-DC-teller), zie nexus_control.md.
+  # Sinds PBI-080 ook naar HA (Energy Dashboard, ledger) i.p.v. via solis_modbus.
   - platform: modbus_controller
     modbus_controller_id: solis
     id: battery_charge_total
-    internal: true
+    name: "Battery Charge Energy"
+    icon: "mdi:battery-arrow-up"
     register_type: read
     address: 33161
     value_type: U_DWORD
     register_count: 4   # t/m 33164, aansluitend op 33165: één request
     unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
     accuracy_decimals: 2
     skip_updates: 59
     filters:
@@ -667,11 +716,14 @@ sensor:
   - platform: modbus_controller
     modbus_controller_id: solis
     id: battery_discharge_total
-    internal: true
+    name: "Battery Discharge Energy"
+    icon: "mdi:battery-arrow-down"
     register_type: read
     address: 33165
     value_type: U_DWORD
     unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
     accuracy_decimals: 2
     skip_updates: 59
     filters:
