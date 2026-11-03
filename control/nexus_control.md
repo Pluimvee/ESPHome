@@ -98,10 +98,10 @@ Apart FC04-request (los register, elke 15 min) voor de overdischarge-ondergrens 
 | 43029 | U16 | — | CT direction | **1** = Reversed | elke 5 min, alleen bij afwijking |
 | 43110 | U16 | — | Storage control switch | **33** = Self-Use + Allow Grid Charge | elke 5 min, alleen bij afwijking |
 | 43132 | U16 | — | RC Grid Adjustment ON/OFF | 0=OFF, **1=ON** | elke 30s, **alleen** als `\|adjusted_w\| > RC_THRESHOLD_W` (100W) — zie [apply_mode](#modi) |
-| 43133 | S16 | 10W | RC Grid Active Power setpoint | Solis-conv: + = export, − = import | elke 30s, **onvoorwaardelijk** (alle modes behalve hold) |
-| 43135 | U16 | — | RC Force Charge/Discharge | 0=OFF, **1**=Force Charge | `hold` (→1) en force charge (→1 elke 30s, →0 bij verlaten), zie [Force charge](#force-charge-boven-8-kw-pbi-058-28-10-2026) |
-| 43136 | U16 | 10W | RC Force Charge Power | — | `hold` (→0) en force charge (→ force_w/10) |
-| 43118 | U16 | 0.1A | Battery max discharge current | 0 of 500 (50 A) | alleen bij afwijking van het gelezen register (gelezen elke minuut) — zie [Ontladen blokkeren in charge](#ontladen-blokkeren-in-charge-30-10-2026) |
+| 43133 | S16 | 10W | RC Grid Active Power setpoint | Solis-conv: + = export, − = import | elke 30s, **onvoorwaardelijk** (alle modes behalve standby) |
+| 43135 | U16 | — | RC Force Charge/Discharge | 0=OFF, **1**=Force Charge | `standby` (→1) en force charge (→1 elke 30s, →0 bij verlaten), zie [Force charge](#force-charge-boven-8-kw-pbi-058-28-10-2026) |
+| 43136 | U16 | 10W | RC Force Charge Power | — | `standby` (→0) en force charge (→ force_w/10) |
+| 43118 | U16 | 0.1A | Battery max discharge current | 0 of 500 (50 A) | alleen bij afwijking van het gelezen register (gelezen elke minuut) — zie [Ontladen blokkeren](#ontladen-blokkeren-43118-30-10-2026-herzien-03-11) |
 | 43140 | U16 | — | Meter1 type & location | **0x0105** = Standard Eastron 3Ph, Grid | elke 5 min, alleen bij afwijking |
 | 43282 | U16 | 1min | RC Timeout | Geldig bereik 2–30; **schrijf 2** (minimum) | elke 5 min, onvoorwaardelijk |
 
@@ -131,7 +131,7 @@ Wordt als vaste waarde **33** geschreven (geen read-modify-write):
 
 | Entiteit | Type | Beschrijving |
 |---|---|---|
-| `select.control_mode` | select | Mode: hold / level / charge / discharge, `optimistic`; **geen** `restore_value`: na een (her)start altijd `level` (safe mode) |
+| `select.control_mode` | select | Mode: hold / level / charge / discharge / standby (zie [Modi](#modi)); **geen** `restore_value`: na een (her)start altijd `level` (safe mode) |
 | `number.target_grid_power` | number | Doelvermogen in W (huis-conv), −10000…10000, stap 100; na een (her)start 0 (safe mode) |
 | `sensor.command_timer` | sensor | Resterende seconden van het opdrachtvenster (10s); 0 = safe mode — zie [Opdrachtvenster](#opdrachtvenster-15-min-en-safe-mode-pbi-046). Het bestaan van de sensor vertelt de EMS-strategie dat de firmware kwartier-opdrachten verwacht |
 | `number.target_soc` | number | Doel-SOC in %, 7…100, stap 0,1 (EMS rekent met 1 decimaal), default 80 — alleen relevant in charge/discharge |
@@ -171,18 +171,41 @@ Er is geen `binary_sensor.fault` of `binary_sensor.grid_meter_connected` — fou
 
 ## Modi
 
-Eén script, `apply_mode`, dekt alle vier de modes — geen apart `update_soc_setpoint` meer. Aangeroepen bij elke opdracht (`set_mode`, of een schrijfactie op mode/target via `set_action`) én elke **30s** via `interval`.
+Eén script, `apply_mode`, dekt alle vijf de modes — geen apart `update_soc_setpoint` meer. Aangeroepen bij elke opdracht (`set_mode`, of een schrijfactie op mode/target via `set_action`) én elke **30s** via `interval`.
 
-### hold
-Enige echte uitzondering: ander Solis-mechanisme (Force Charge i.p.v. RC Grid Adjustment), en moet **onvoorwaardelijk** herbevestigd worden — self-use is precies wat `hold` wil vóórkomen. Schrijft `43136=0` (RC Force Charge Power) en `43135=1` (Force Charge aan, op 0W), en stopt (`return`) vóór de rest van het script. Valt net als elke andere opdracht na 900s terug naar safe mode; force charge verloopt daarna via de RC-timeout (2 min). Een nieuwe opdracht die 43132 = 1 schrijft, zet force in de Solis zelf meteen uit (43135 → 0) — de firmware hoeft 43135 daarvoor niet te schrijven. `43132`/`43133` worden in `hold` niet aangeraakt.
+**Indeling sinds 03-11-2026** (user, #86): `hold` is direct hold, het doel bepaalt alleen wanneer een mode
+in hold overgaat.
 
-### level / charge / discharge
+| Mode | target_soc | Gedrag | Doel bereikt |
+|---|---|---|---|
+| `charge X` | omhoog | laden (net en PV) tot X | → hold |
+| `level X` | ondergrens | accu volgt de huislast (net op target_grid) tot X | → hold |
+| `discharge X` | omlaag | ontladen met export tot X | ongewijzigd (target_grid) |
+| `hold` | — | direct: niet ontladen, niet uit het net laden, wel PV opnemen | — |
+| `standby` | — | accu uit, ook geen PV (tot 03-11 heette dit `hold`) | — |
+
+- `charge X` met X onder de SOC: doel bereikt, dus direct hold. "Lever tot X" is `level X` (tot 03-11
+  `charge X`, zie [Ontladen blokkeren](#ontladen-blokkeren-43118-30-10-2026-herzien-03-11)).
+- **Safe mode** = `level`, target_grid 0, target_soc op de vloer (7): gewoon self-use, geen ondergrens,
+  geen venster.
+
+### hold (sinds 03-11)
+Self-use met ontladen geblokkeerd: 43118 = 0, force uit (43135 = 0), setpoint 0 en RC verloopt (onder
+`RC_THRESHOLD_W`). In self-use laadt de Solis alleen uit PV-overschot (net-laden alleen via TOU of force,
+die we niet gebruiken), en met 43118 = 0 kan hij niet ontladen: huislast komt uit het net, PV-overschot
+gaat de accu in, geen export. Geen SOC-doel, dus geen correctie uit het net (#86).
+
+### standby (tot 03-11 `hold`)
+Enige echte uitzondering: ander Solis-mechanisme (Force Charge i.p.v. RC Grid Adjustment), en moet **onvoorwaardelijk** herbevestigd worden. Schrijft `43136=0` (RC Force Charge Power) en `43135=1` (Force Charge aan, op 0W), en stopt (`return`) vóór de rest van het script. Ook PV gaat dan niet de accu in (bv. om PV te exporteren als de exportprijs hoger is dan de waarde in de accu). **Geen spaarstand**: de omvormer blijft actief op 0 W regelen (~80 W, niet apart gemeten). Valt net als elke andere opdracht na 900s terug naar safe mode; force charge verloopt daarna via de RC-timeout (2 min). `43132`/`43133` worden in `standby` niet aangeraakt.
+
+### level / charge / discharge / hold
 Gedeeld mechanisme via RC Grid Adjustment (43132/43133). Uitzondering sinds 28-10: `charge` boven 8 kW (residual + R) loopt via RC Force Charge (43135/43136), zie [Force charge](#force-charge-boven-8-kw-pbi-058-28-10-2026).
 
-- `level`: `adjusted_w = target_grid_w`
-- `charge` / `discharge`: `adjusted_w` volgt uit de SOC-deadline-sturing hieronder (huislast-term + benodigd accuvermogen)
+- `level`: `adjusted_w = target_grid_w`; op of onder de ondergrens 0 (hold)
+- `hold`: `adjusted_w = 0`
+- `charge` / `discharge`: `adjusted_w` volgt uit de SOC-deadline-sturing hieronder (huislast-term + benodigd accuvermogen); `charge` voorbij het doel 0 (hold)
 
-Vervolgens, voor alle drie de modes identiek:
+Vervolgens, voor deze vier modes identiek:
 
 1. **43133 wordt altijd geschreven**: `sp = -(adjusted_w / 10)` (huis → Solis conventie), ongeacht de grootte van `adjusted_w`. Dit kost niets en geeft direct effect zolang RC nog actief is.
 2. **43132 wordt alleen herbevestigd (→1) als `|adjusted_w| > RC_THRESHOLD_W`** (100W). Onder die drempel schrijven we 43132 niet — de Solis' eigen RC-timeout (43282) laat 'm dan vanzelf verlopen naar self-use, zonder dat de firmware zelf hoeft te bepalen wanneer een waarde "stabiel genoeg" is.
@@ -219,7 +242,8 @@ if soc geldig and not_past_target:
     adjusted  = max(tgt_w, min(want, cap))                     # charge
     adjusted  = min(tgt_w, max(want, cap))                     # discharge
 else:
-    adjusted  = tgt_w
+    adjusted  = 0                        # charge: doel bereikt → hold (sinds 03-11)
+    adjusted  = tgt_w                    # discharge
 ```
 
 - **Huislast-term** (`residual_power`, zie [Residual power en energie](#residual-power-en-energie)):
@@ -230,11 +254,12 @@ else:
   hij als 0.
 - **PV telt alleen mee zoals hij er nu is** (via `residual`). Bij PV-overschot groter dan R wordt
   `want` < `tgt_w` en blijft het setpoint `tgt_w`: de accu neemt al het overschot op.
-- **Op het doel vasthouden** (`need_pct` = 0, dus R = 0): `adjusted = max(tgt_w, residual)` — de accu
-  staat stil, het net levert huislast en EV. Dit is ook de modus tijdens een charge_deadline (charge
-  met `target_soc` = huidige SOC). Bij PV-overschot laadt de accu dat overschot.
-- **SOC voorbij het doel** (bv. 07-09: charge naar 17% vanaf 54%): geen huislast-term, `adjusted =
-  tgt_w` — de accu levert aan het huis tot het doel, en wordt daar vastgehouden.
+- **Op het doel** (`need_pct` = 0, dus R = 0): `adjusted = max(tgt_w, residual)` — de accu staat stil,
+  het net levert huislast en EV, PV-overschot gaat de accu in.
+- **SOC voorbij het doel**: `charge` → hold (setpoint 0, 43118 = 0). Tot 03-11 leverde `charge` dan aan
+  het huis tot het doel (07-09: charge naar 17% vanaf 54%); dat is nu `level X`. Voor "vasthouden" stuurt
+  het EMS `hold` in plaats van `charge` met het doel op de huidige SOC: die trok bij een kleine dip
+  onder het doel stroom uit het net (#86).
 - **Fasegrens**: de Solis verdeelt symmetrisch, dus de ruimte op de zwaarste fase (garagegroep: EV-lader
   + WP) bepaalt hoeveel netvermogen er nog bij mag. De meter levert stroom zonder richting; een fase die
   teruglevert maakt de schatting alleen voorzichtiger. Fasestroom ververst ~11s, de som draait elke 30s —
@@ -242,10 +267,11 @@ else:
 - **Log**: `charge tgt=… R=… res=… adj=… sp=… soc=…/… imax=…A cap=…W rc=…` (imax/cap NAN zonder
   fasestroom, R/res 0/NAN voorbij het doel).
 
-### Ontladen blokkeren in charge (30-10-2026)
+### Ontladen blokkeren (43118, 30-10-2026, herzien 03-11)
 
-**Opdracht** (user 30-10): `charge` naar X betekent "lever tot X, houd daarna vast", en het net gaat in
-`charge` nooit onder 0. De EMS geeft de opdracht; de firmware voert hem uit.
+**Opdracht** (user 30-10): "lever tot X, houd daarna vast", en het net gaat nooit onder 0. Tot 03-11 was
+dat `charge X` met X onder de SOC; sinds 03-11 is het `level X` (zie [Modi](#modi)). De EMS geeft de
+opdracht; de firmware voert hem uit.
 
 **Probleem**: alleen met RC grid-adjustment lukte vasthouden niet. 30-10 13:15–14:05 (doel 96,4/96,5)
 pendelde de accu per 5 min tussen −2,7 en +2,7 kW: het setpoint (residual) loopt 30 s achter op de
@@ -257,30 +283,34 @@ elke Solis-modus. Getest 30-10 17:31: 330 W ontladen → −80 W (stand-by uit h
 terug op 50 A direct weer ontladen. (43131 "Battery discharge limit power" deed niets in self-use, en
 Remote Dispatch 44100+ kent onze omvormerfirmware niet: 34502 bestaat niet.)
 
-Drie regels in `apply_mode`; het register is de waarheid (user 30-10), geen eigen administratie:
+Regels in `apply_mode` (03-11); het register is de waarheid (user 30-10), geen eigen administratie:
 
 ```
-if (mode != charge && 43118 != 50 A) 43118 = 50 A
-if (mode == charge && soc <= doel && 43118 != 0) 43118 = 0
-else if (mode == charge && soc > doel && delatch && 43118 != 50 A) 43118 = 50 A
+hold, charge                                  → 43118 = 0
+discharge, standby, safe mode (level zonder venster) → 43118 = 50 A
+level X met venster:
+    soc <= X                                  → 43118 = 0, setpoint 0 (hold)
+    soc >  X en nieuwe opdracht (delatch)     → 43118 = 50 A
+(alleen schrijven als het register afwijkt)
 ```
 
-- **Latch**: komt `charge` binnen met de SOC boven het doel, dan mag de accu leveren tot het doel (uitstel).
-  Eenmaal op 0 blijft het register 0 tot de volgende opdracht, ook als hires daarna weer boven het doel
-  komt (PV-overschot). Geen hysterese, dus geen heen-en-weer schrijven. Zonder geldige SOC is `soc` −1,
-  dus dicht.
+- **charge**: altijd 0. Tijdens het laden verdwijnen daarmee de korte ontlaadpieken bij een sprong in
+  huislast, en voorbij het doel is het hold. Huislast en pieken gaan via het net; PV-overschot gaat de
+  accu in (43117 laden blijft 50 A).
+- **Latch (level X)**: eenmaal op of onder X blijft het register 0 tot de volgende opdracht, ook als hires
+  daarna weer boven X komt (PV-overschot). Geen hysterese, dus geen heen-en-weer schrijven. Zonder geldige
+  SOC is `soc` −1, dus dicht.
 - **Delatch** (#70, user 30-10): elke opdracht (`set_mode`, of een schrijfactie op mode/target) roept
-  `apply_mode(delatch = true)` aan; het interval en de fasestroom-trigger roepen hem aan met `false`. Ligt het
-  nieuwe doel onder de SOC, dan weer leveren tot het doel. Voor hold geeft het EMS de actuele SOC (inclusief
-  bijgeladen PV) als doel mee: dan pakt de tweede regel het en blijft hij dicht, zonder schrijfactie.
-- In `charge` kan de accu dus alleen laden of stilstaan zodra het doel bereikt is. Huislast en pieken gaan
-  via het net; PV-overschot gaat de accu in (43117 laden blijft 50 A). Ook tijdens gewoon laden verdwijnen
-  daarmee de korte ontlaadpieken bij een sprong in huislast.
+  `apply_mode(delatch = true)` aan; het interval en de fasestroom-trigger roepen hem aan met `false`. Ligt X
+  onder de SOC, dan weer leveren tot X.
+- **Safe mode** opent 43118 altijd (geen venster, `cmd_deadline_ms` = 0): na een herstart of het verlopen
+  van het venster is de accu dus vrij, ook als de vorige opdracht hem dicht had gezet. Daarom zet de
+  terugval ook target_soc op de vloer (7), en heeft `target_soc` geen `restore_value` meer.
 - **Flash**: de spec zegt bij 43118 niet "Not save in Flash" (wel bij 43130/43131); aangenomen dat hij
   blijvend is. Daarom alleen schrijven bij afwijking van het gelezen register (elke minuut gelezen; na een
   schrijfactie publiceert de number zelf de nieuwe waarde, `ModbusNumber::control`).
 - **Herstel**: na een (her)start is het register nog onbekend (NAN ≠ 500), dus de eerste `apply_mode` (safe
-  mode = `level`) schrijft 50 A. Safe mode en `hold` zetten 50 A. Handmatig: `number.solis_s6_eh3p_battery_max_discharge_current`.
+  mode) schrijft 50 A. Handmatig: `number.solis_s6_eh3p_battery_max_discharge_current`.
 - `discharge` laat 43117/43118 op 50/50 (user 30-10; symmetrie, laden 0 in `discharge`, kan later).
 - Log: `dis=…A` in de charge-regel (gelezen registerwaarde).
 - Te verifiëren: vasthouden overdag (PV-overschot gaat de accu in, geen export, geen ontladen), en een
@@ -299,14 +329,14 @@ force   = want > 8000 en resttijd > 3 min   (43135 = 1: want >= 5000)    # hyste
           alleen in charge, vóór het doel, en met bekende fasestroom (phase_cap ≠ NAN)
 force_w = clamp(min(R, 10000, phase_cap − residual), ≥ 0)
 force:  43136 = force_w/10 ; 43135 = 1 ; 43132/43133 niet schrijven ; return
-geen force (ook na hold) en 43135 ≠ 0:  43135 = 0, daarna het gewone RC-pad
+geen force (ook na standby) en 43135 ≠ 0:  43135 = 0, daarna het gewone RC-pad
 ```
 
 - **Fasegrens zelf bewaken**: in force begrenst de Solis het net niet. `phase_cap − residual` is het
   laadvermogen waarbij de zwaarste fase op 25 A uitkomt (net = residual + laadvermogen; `residual` bevat
   sinds PBI-012 het laadvermogen niet, dus geen terugkoppeling). Naast de 30s-ronde draait `apply_mode`
   ook direct na elke fasestroom-read (~11s) als een fase tijdens force boven 25 A zit.
-- **43132/43133 niet aanraken in force**: 43132 = 1 zet force in de Solis uit (zie hold). Elke ronde
+- **43132/43133 niet aanraken in force**: 43132 = 1 zet force in de Solis uit (zie standby). Elke ronde
   43136 + 43135 herschrijven houdt force binnen de RC-timeout (2 min) levend; valt de firmware weg, dan
   stopt force vanzelf.
 - **Uit force: 43135 = 0 expliciet.** Zonder dat liep force bij een setpoint onder `RC_THRESHOLD_W`
@@ -354,12 +384,12 @@ strategie-run die elk kwartier draait (tot 22-10: het eerstvolgende hele wandklo
   Solis valt via zijn RC-timeout (≤ 2 min) terug op zijn eigen self-use. `apply_mode` is voor PBI-046
   niet gewijzigd, behalve dat R met de resttijd van het venster rekent.
 - **Terugval**: na 900s zonder nieuwe opdracht zet `arm_command` de Nexus-entiteiten op safe mode
-  (`target_grid` 0, `control_mode` `level`) — een zichtbare state-wijziging in HA, met
-  `ESP_LOGW("Command timer verlopen → returning to safe mode")`. Geldt voor `charge`, `discharge`, `hold` en `level` met
-  `target_grid` ≠ 0. De Solis-kant doet `apply_mode(false)`, direct daarna in `arm_command`.
+  (`target_grid` 0, `control_mode` `level`, `target_soc` 7) — een zichtbare state-wijziging in HA, met
+  `ESP_LOGW("Command timer verlopen → returning to safe mode")`. Geldt voor `charge`, `discharge`, `hold`, `standby` en `level` met
+  `target_grid` ≠ 0 of een ondergrens. De Solis-kant doet `apply_mode(false)`, direct daarna in `arm_command`.
 - **Geen lus**: de terugval publiceert alleen (geen `set_action`), dus armt geen nieuw venster. Een
   handmatige schrijfactie naar safe mode armt ook geen venster — daarom de `if` in `arm_command`.
-- **Na een (her)start**: altijd safe mode (`control_mode` en `target_grid` zonder `restore_value`).
+- **Na een (her)start**: altijd safe mode (`control_mode`, `target_grid` en `target_soc` zonder `restore_value`).
 - **R** rekent met de resttijd van hetzelfde venster (900s), met de vloer van 30s (`RATE_FLOOR_MS`).
 
 Implementatie, zelfde patroon als de auto-off in `aqua-heatpump.yaml`. `arm_command` zet alleen de
@@ -763,7 +793,7 @@ ook zoveel registers. Gecontroleerd 30-10: de Solis levert het blok van 31 regis
 43135–43136 elk uur).
 
 - `g_force_charge` (eigen kopie van "force actief") is vervangen door `rc_force_mode_reg` (43135). Gevolg:
-  ook na `hold` zet de eerste ronde in een andere mode force meteen uit (43135 = 0), in plaats van te
+  ook na `standby` zet de eerste ronde in een andere mode force meteen uit (43135 = 0), in plaats van te
   wachten op de RC-timeout.
 
 - **Direct bij een opdracht**: `set_mode` en de `set_action` van `select.control_mode` en beide `number`-entiteiten roepen eerst `arm_command` en dan `apply_mode(true)` synchroon aan, zie [Opdrachtvenster](#opdrachtvenster-15-min-en-safe-mode-pbi-046).
