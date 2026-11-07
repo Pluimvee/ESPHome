@@ -1,0 +1,369 @@
+﻿# Copyright (c) 2025 Pluimvee
+# Garage Hub - control EV-charger remotely to act on EPEX and FRR market prices
+#
+# Also reads the garage submeter (SDM72D-M) over RS485 on the D1's RX/TX, wired
+# like modbus-bridge.yaml (MAX485 on GPIO1/GPIO3, hence logger baud_rate 0).
+# Its three measuring elements carry three single-phase circuits:
+#   L1 = heat pump      L2 = garage         L3 = EV charger
+#
+# The SDM72D-M has no per-phase energy registers (see energy/sdm72d-m.yaml), so
+# per-circuit kWh is integrated from the 1s phase power and re-anchored once a
+# minute to the meter's own Import - Export, the same reconcile as meter-hub.yaml.
+#
+# Replaces the EARU meters energy-evcharger and energy-heatpump. In HA the old
+# entity_ids (and their statistics) were taken over on 2026-11-07:
+#   Charge Power/Energy    -> sensor.ev_charger_power / sensor.ev_charger_energy
+#   Heatpump Power/Energy  -> sensor.heatpump_power / sensor.heatpump_energy
+#
+# TODO
+# - Remove the EARU (energy-evcharger) still wired in the EV circuit; it cannot
+#   go without also cutting power to this hub, so rewire first.
+# - Local load guard, now that relays and measurement share one loop:
+#   - Total Power too high -> force slow charging, or switch charging off
+#   - Heatpump Power too high -> block Fast Charging
+#   Thresholds and hysteresis still to decide; the EMS stays in charge otherwise.
+# - Control Pilot read-out (connected / charging / offered current), see the
+#   earlier proposal (CP on an ADC pin; the D1 has only A0).
+
+# First some basic configuration
+#--------------------------------------------
+substitutions:
+  device_id: garage-hub
+  build_root: !secret build_root
+  friendly_name: Garage Hub
+
+packages:
+  wifi: !include ../wifi.yaml
+  version: !include ../version.yaml
+
+esphome:
+  name: ${device_id}
+  build_path: ${build_root}/${device_id}  
+  friendly_name: ${friendly_name}
+  project:
+    name: 'EcoGrid.Garage Hub (EV Charger + SDM72)'
+    version: ${version}
+
+esp8266:
+  board: esp12e
+  restore_from_flash: true  # energy counters must survive a power cycle
+
+preferences:
+  flash_write_interval: 15min
+
+# Enable logging
+logger:
+  level: DEBUG  # Set the logging level to DEBUG
+  baud_rate: 0  # UART0 is used for the RS485
+  logs:
+    uart: WARN
+    sensor: WARN
+    modbus_controller.sensor: WARN
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: !secret api_key
+
+# Allow Over-The-Air updates
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+# Enable web server for debugging and control
+web_server:
+    port: 80
+    version: 3
+
+# NOW the device specific logic begins
+#--------------------------------------------
+
+# Define the two relays
+switch:
+  - platform: gpio
+    pin: GPIO4 #(NodeMCU pin D2)
+    id: charge_on
+    name: "Charge On"
+    inverted: yes  # default the charger is on, wired on NO: active relais switches the charger on
+    restore_mode: RESTORE_DEFAULT_ON  # Restore the state after reboot
+
+  - platform: gpio
+    pin: GPIO5 # (NodeMCU pin D1)
+    id: fast_charging
+    name: "Fast Charging"
+    inverted: yes
+    restore_mode: RESTORE_DEFAULT_OFF  # default slow charging (10Amps), restore the state after reboot
+
+# UART configuration for MAX485, same as modbus-bridge
+uart:
+  tx_pin: GPIO1
+  rx_pin: GPIO3
+  baud_rate: 9600
+  id: uart_rs485
+  rx_buffer_size: 512
+
+modbus:
+  - id: modbus1
+    uart_id: uart_rs485
+
+# Phase power every second (one transaction, 0x000C-0x0011 are adjacent),
+# Import/Export once a minute via skip_updates
+modbus_controller:
+  - id: sdm72
+    address: 1              # SDM72D-M default Modbus address
+    modbus_id: modbus1
+    update_interval: 1s
+    setup_priority: -10
+
+globals:
+  # Index: 0 = heat pump (L1), 1 = garage (L2), 2 = EV charger (L3)
+  - id: integ               # W.s since the last reconcile
+    type: float[3]
+    initial_value: "{0,0,0}"
+  # Running per-circuit energy. double, not float: near 1500 kWh a float step is
+  # 0.12 Wh, so a 600 W second (0.17 Wh) would round down and undercount ~27%.
+  # Renamed from circuit_kwh on 2026-11-07 for a fresh NVS key: the initial values
+  # are the last readings of the old EARU meters (heat pump + today's SDM72 part),
+  # so the taken-over HA statistics continue without a jump.
+  - id: energy_kwh
+    type: double[3]
+    restore_value: true
+    initial_value: "{1523.497, 0.072, 490.989}"
+  # NOT restored: after a reboot the next Import/Export reading re-baselines
+  - id: prev_total
+    type: float
+    initial_value: "NAN"
+  # Latest raw power per circuit for Total Power; the published sensors are
+  # throttled and a throttled publish does not update .state (see meter-hub.yaml)
+  - id: circuit_w
+    type: float[3]
+    initial_value: "{NAN, NAN, NAN}"
+
+# Add a sensor to monitor WiFi signal strength
+sensor:
+  - platform: wifi_signal
+    name: "WiFi Signal Strength"
+    update_interval: 60s
+
+  # --- Power per circuit, integrated on the raw value (see meter-hub.yaml) ---
+  - platform: modbus_controller
+    modbus_controller_id: sdm72
+    name: "Heatpump Power"
+    register_type: read
+    address: 0x000C
+    value_type: FP32
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+    filters:
+      - throttle: 5s          # governs Home Assistant only, never the integration
+    on_raw_value:
+      then:
+        - lambda: |-
+            static uint32_t last_ms = 0;
+            const uint32_t now = millis();
+            if (!isnan(x)) {
+              id(circuit_w)[0] = x;
+              if (last_ms != 0) {
+                const float dt = (now - last_ms) * 0.001f;
+                if (dt > 0.0f && dt < 10.0f) {
+                  id(integ)[0] += x * dt;                  // W.s
+                  id(energy_kwh)[0] += x * dt / 3600000.0f;
+                }
+              }
+              last_ms = now;
+            }
+
+  - platform: modbus_controller
+    modbus_controller_id: sdm72
+    name: "Garage Power"
+    register_type: read
+    address: 0x000E
+    value_type: FP32
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+    filters:
+      - throttle: 5s          # governs Home Assistant only, never the integration
+    on_raw_value:
+      then:
+        - lambda: |-
+            static uint32_t last_ms = 0;
+            const uint32_t now = millis();
+            if (!isnan(x)) {
+              id(circuit_w)[1] = x;
+              if (last_ms != 0) {
+                const float dt = (now - last_ms) * 0.001f;
+                if (dt > 0.0f && dt < 10.0f) {
+                  id(integ)[1] += x * dt;                  // W.s
+                  id(energy_kwh)[1] += x * dt / 3600000.0f;
+                }
+              }
+              last_ms = now;
+            }
+
+  - platform: modbus_controller
+    modbus_controller_id: sdm72
+    name: "Charge Power"
+    register_type: read
+    address: 0x0010
+    value_type: FP32
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+    filters:
+      - throttle: 5s          # governs Home Assistant only, never the integration
+    on_raw_value:
+      then:
+        - lambda: |-
+            static uint32_t last_ms = 0;
+            const uint32_t now = millis();
+            if (!isnan(x)) {
+              id(circuit_w)[2] = x;
+              if (last_ms != 0) {
+                const float dt = (now - last_ms) * 0.001f;
+                if (dt > 0.0f && dt < 10.0f) {
+                  id(integ)[2] += x * dt;                  // W.s
+                  id(energy_kwh)[2] += x * dt / 3600000.0f;
+                }
+              }
+              last_ms = now;
+            }
+
+  # L1+L2+L3 out of the same register read, so all three are from one instant
+  - platform: template
+    name: "Total Power"
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: |-
+      const float a = id(circuit_w)[0], b = id(circuit_w)[1], c = id(circuit_w)[2];
+      if (isnan(a) || isnan(b) || isnan(c)) return NAN;
+      return a + b + c;
+
+  # --- Ground truth: Import - Export once a minute, one 4-register read ---
+  - platform: modbus_controller
+    modbus_controller_id: sdm72
+    id: meter_import
+    internal: true
+    register_type: read
+    address: 0x0048
+    value_type: FP32
+    accuracy_decimals: 3
+    skip_updates: 59
+
+  - platform: modbus_controller
+    modbus_controller_id: sdm72
+    id: meter_export
+    internal: true
+    register_type: read
+    address: 0x004A
+    value_type: FP32
+    accuracy_decimals: 3
+    skip_updates: 59
+    on_value:
+      then:
+        - lambda: |-
+            // Same reconcile as meter-hub.yaml: each circuit is already booked per
+            // second; only the residual against the meter's net counter is spread
+            // over the circuits by their share.
+            const float imp = id(meter_import).state;
+            if (isnan(imp) || isnan(x)) return;
+            const float net = imp - x;               // x is Export
+            id(total_energy).publish_state(net);
+
+            if (isnan(id(prev_total))) {
+              id(prev_total) = net;                  // first reading only baselines
+              return;
+            }
+
+            constexpr float MIN_DELTA = 0.005f;      // kWh, below = FP32 noise
+            constexpr float MAX_AMP = 4.0f;
+
+            const float meter_delta = net - id(prev_total);
+            if (fabsf(meter_delta) > 500.0f) {       // counter reset / swapped meter
+              id(prev_total) = net;
+              for (int i = 0; i < 3; i++) id(integ)[i] = 0.0f;
+              return;
+            }
+            if (fabsf(meter_delta) < MIN_DELTA) return;   // carry forward
+
+            float sum = 0.0f, sum_abs = 0.0f;
+            for (int i = 0; i < 3; i++) {
+              sum += id(integ)[i];
+              sum_abs += fabsf(id(integ)[i]);
+            }
+            const float sum_kwh = sum / 3600000.0f;
+            const float error = meter_delta - sum_kwh;
+            id(reconcile_error).publish_state(error * 1000.0f);   // Wh
+
+            if (sum_kwh == 0.0f || (sum_kwh > 0.0f) != (meter_delta > 0.0f) ||
+                sum_abs > MAX_AMP * fabsf(sum)) {
+              ESP_LOGW("recon", "delta=%.4f sum=%.6f amp=%.1f - skipped",
+                       meter_delta, sum_kwh, sum_abs / (fabsf(sum) + 1e-9f));
+              id(prev_total) = net;
+              for (int i = 0; i < 3; i++) id(integ)[i] = 0.0f;
+              return;
+            }
+
+            id(prev_total) = net;
+            for (int i = 0; i < 3; i++) {
+              id(energy_kwh)[i] += error * (id(integ)[i] / sum);
+              id(integ)[i] = 0.0f;
+            }
+            ESP_LOGD("recon", "delta=%.4f sum=%.6f error=%.6f", meter_delta, sum_kwh, error);
+
+  # Net total of the meter, published from the reconcile above
+  - platform: template
+    name: "Total Energy"
+    id: total_energy
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total
+    accuracy_decimals: 3
+    update_interval: never
+
+  # Residual of each reconcile: meter delta minus what the sampled power explains
+  - platform: template
+    name: "Reconcile Error"
+    id: reconcile_error
+    entity_category: diagnostic
+    icon: "mdi:delta"
+    unit_of_measurement: "Wh"
+    state_class: measurement
+    accuracy_decimals: 1
+    update_interval: never
+
+  # --- Reconstructed energy per circuit, anchored to Total Energy above ---
+  # `total`, not `total_increasing`: a negative reconcile correction may dip it
+  - platform: template
+    name: "Heatpump Energy"
+    lambda: return id(energy_kwh)[0];
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total
+    accuracy_decimals: 3
+    update_interval: 10s
+
+  - platform: template
+    name: "Garage Energy"
+    lambda: return id(energy_kwh)[1];
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total
+    accuracy_decimals: 3
+    update_interval: 10s
+
+  - platform: template
+    name: "Charge Energy"
+    lambda: return id(energy_kwh)[2];
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total
+    accuracy_decimals: 3
+    update_interval: 10s

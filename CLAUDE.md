@@ -43,7 +43,7 @@ The devices fall into five groups that together form a whole-home energy managem
 | Battery control | `peak-shaver.yaml` | Controls Solis battery inverter via Modbus to shave import peaks |
 | Appliance meters | `energy-wpboiler.yaml`, `energy-heatpump.yaml`, `energy-quooker.yaml`, `energy-dishwasher.yaml`, `energy-steamoven.yaml`, `energy-microwave.yaml` | Per-appliance energy monitoring (SONOFF with HLW8012/BL0937 chip) |
 | Climate | `thermostat.yaml`, `esp32-2432S024.yaml`, `resideo-*.yaml`, `kamstrup-wp.yaml`, `floor-temp.yaml`, `outside-temp.yaml`, `climate-sensor.yaml`, `aqua-heatpump.yaml`, `intergas-boiler.yaml` | Heating system with OpenTherm control, room sensors, heat meter, pump control |
-| Utilities | `water-meter.yaml`, `ev-charger.yaml`, `modbus-bridge.yaml`, `switch-evcharger.yaml` | Water metering, EV charger relay, generic Modbus TCP-RTU bridge |
+| Utilities | `water-meter.yaml`, `garage-hub.yaml`, `modbus-bridge.yaml`, `switch-evcharger.yaml` | Water metering, EV charger relay, generic Modbus TCP-RTU bridge |
 
 ## Custom external components
 
@@ -87,7 +87,7 @@ substitutions:
 
 | Board | Framework | Used in |
 |---|---|---|
-| ESP8266 esp01_1m | Arduino | most sensors, modbus-bridge, ev-charger, omnik |
+| ESP8266 esp01_1m | Arduino | most sensors, modbus-bridge, garage-hub, omnik |
 | ESP8266 esp12e | Arduino | p1-reader |
 | ESP8266 esp8285 | Arduino | energy meters (SONOFF) |
 | ESP32 esp32dev | Arduino | thermostat |
