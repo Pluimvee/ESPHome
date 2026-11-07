@@ -89,6 +89,25 @@ globals:
     restore_value: true
     initial_value: '900.0'
 
+  # Ring buffer of hourly energy counter snapshots for the rolling 24h COP (25 = 24h window)
+  - id: cop_heat
+    type: std::array<float, 25>
+    restore_value: true
+  - id: cop_cool
+    type: std::array<float, 25>
+    restore_value: true
+  - id: cop_elec
+    type: std::array<float, 25>
+    restore_value: true
+  - id: cop_head
+    type: int
+    restore_value: true
+    initial_value: '0'
+  - id: cop_count
+    type: int
+    restore_value: true
+    initial_value: '0'
+
 # Switch for auto control van de pomp
 switch:
   - platform: template
@@ -111,7 +130,8 @@ sensor:
     uart_id: uart_kamstrup
     update_interval: 10s
     heat_energy:
-      name: "Energy Output"
+      name: "Energy Heating"
+      id: energy_heating
       icon: mdi:fire
       device_class: energy
       state_class: total_increasing
@@ -132,9 +152,6 @@ sensor:
       state_class: measurement
       filters:
         - multiply: 1000
-    volume:
-      name: "Volume"
-      icon: "mdi:water"
     temp1:
       name: "Tout"
       icon: "mdi:thermometer"
@@ -149,6 +166,7 @@ sensor:
     # we convert to kWh by multiplying with 0.1
     custom:
       - name: "Energy Input"
+        id: energy_input
         command: 0x0055
         device_class: energy
         state_class: total_increasing
@@ -156,7 +174,59 @@ sensor:
         icon: "mdi:flash-outline"
         accuracy_decimals: 2
         filters:
-          - multiply: 0.1             # m3 to kWh conversion factor 
+          - multiply: 0.1             # m3 to kWh conversion factor
+      # E3 cooling energy (register 63), counts when T1 < T2 (defrost / cooling)
+      # volume (0x0044) is no longer read: max 8 registers per request
+      - name: "Energy Cooling"
+        id: energy_cooling
+        command: 0x003F
+        device_class: energy
+        state_class: total_increasing
+        unit_of_measurement: "GJ"
+        icon: "mdi:snowflake"
+        accuracy_decimals: 2
+
+  # Heating and cooling energy in kWh (1 GJ = 277.778 kWh)
+  - platform: copy
+    source_id: energy_heating
+    name: "Energy Heating kWh"
+    icon: mdi:fire
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 1
+    filters:
+      - multiply: 277.778
+
+  - platform: copy
+    source_id: energy_cooling
+    name: "Energy Cooling kWh"
+    icon: "mdi:snowflake"
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 1
+    filters:
+      - multiply: 277.778
+
+  # Rolling 24h COP, published hourly by the interval below
+  # bruto = heating / input
+  # netto = (heating - cooling) / input: incl. defrosts in winter, -EER in summer (cooling)
+  - platform: template
+    name: "COP Bruto 24h"
+    id: cop_bruto_24h
+    icon: mdi:heat-pump
+    state_class: measurement
+    accuracy_decimals: 2
+    update_interval: never
+
+  - platform: template
+    name: "COP Netto 24h"
+    id: cop_netto_24h
+    icon: mdi:heat-pump
+    state_class: measurement
+    accuracy_decimals: 2
+    update_interval: never
 
   # Sensor to show the pump usage in % (50-100%)
   - platform: template
@@ -198,6 +268,43 @@ number:
               - script.execute: pump_control  
 
 interval:
+  # Hourly snapshot of the energy counters, COP over the oldest..newest snapshot (24h)
+  - interval: 1h
+    then:
+      - lambda: |-
+          const int N = 25;               // 25 snapshots = 24h window
+          const int N_MIN = 7;            // publish after at least 6h of data
+          const float GJ_KWH = 277.778f;
+          auto &heat = id(cop_heat);
+          auto &cool = id(cop_cool);
+          auto &elec = id(cop_elec);
+          int &head = id(cop_head);
+          int &n = id(cop_count);
+
+          float h = id(energy_heating).state;
+          float c = id(energy_cooling).state;
+          float e = id(energy_input).state;
+          if (isnan(h) || isnan(c) || isnan(e)) return;
+
+          heat[head] = h; cool[head] = c; elec[head] = e;
+          int newest = head;
+          head = (head + 1) % N;
+          if (n < N) n++;
+          int oldest = (head + N - n) % N;
+
+          float d_elec = elec[newest] - elec[oldest];
+          if (n < N_MIN || d_elec < 0.5f) {   // too little data, or WP off the whole window
+            id(cop_bruto_24h).publish_state(NAN);
+            id(cop_netto_24h).publish_state(NAN);
+            return;
+          }
+          float d_heat = (heat[newest] - heat[oldest]) * GJ_KWH;
+          float d_cool = (cool[newest] - cool[oldest]) * GJ_KWH;
+          id(cop_bruto_24h).publish_state(d_heat / d_elec);
+          id(cop_netto_24h).publish_state((d_heat - d_cool) / d_elec);
+          ESP_LOGI("cop", "COP %dh: heat=%.1f cool=%.1f elec=%.2f kWh -> bruto=%.2f netto=%.2f",
+                   n - 1, d_heat, d_cool, d_elec, d_heat / d_elec, (d_heat - d_cool) / d_elec);
+
   - interval: 60s
     then:
       - script.execute: pump_control
