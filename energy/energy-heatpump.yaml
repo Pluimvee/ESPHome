@@ -32,8 +32,15 @@ preferences:
 
 # Enable logging
 logger:
-  level: INFO
+  level: VERY_VERBOSE
   baud_rate: 0
+  logs:
+    cse7766: VERY_VERBOSE       # header/checksum-meldingen staan op VV, de waardes op V
+    uart.arduino_esp8266: INFO
+    sensor: INFO                # anders verzuip je in de sensor-publish regels
+    wifi: INFO
+    api: INFO
+    api.service: INFO
 
 # Enable Home Assistant API
 api:
@@ -44,7 +51,6 @@ api:
 ota:
   - platform: esphome
     password: !secret ota_password
-
 
 # Enable web server for debugging and control
 web_server:
@@ -95,6 +101,9 @@ uart:
   baud_rate: 4800
   parity: EVEN
   id: CSE7759B_UART
+  debug:
+    # direction: RX
+    # buffer_size: 256
 
 # -- the sensors --
 sensor:
