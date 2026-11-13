@@ -17,10 +17,12 @@ substitutions:
   hires_top_pct: "100"
   hires_floor_pct: "7"
   # hires v3 (PBI-044, 28-10-2026): tellen in ampère i.p.v. watt. Capaciteit en laadfactor
-  # gefit op drie ijkpuntparen 15-10..22-10 (Solis P/V tegen BMS 7/100, rms 0,06pp) —
-  # opnieuw toetsen zodra er meer ijkpunten zijn.
-  hires_ah: "50.5"
-  hires_chg_factor: "1.013"
+  # gefit op ijkpuntparen (Solis P/V tegen BMS 7/100). Herijkt 13-11-2026 (PBI-109): de
+  # oktoberfit (50,5 / 1,013) telde 4-6 pp te weinig per traverse; de capaciteit tussen de
+  # eindpunten zakte 4-6% (cellen 20 → 13 °C). Vijf trajecten 03-11..13-11: rms 1,2 pp.
+  # Opnieuw toetsen zodra de capaciteit weer verschuift (voorjaar).
+  hires_ah: "47.2"
+  hires_chg_factor: "1.000"
   # Energie (pp) sinds de laatste BMS-stap waarboven we een BMS-stilstand aannemen. Een
   # normale stap is ~1pp; de BMS blijft op vaste plekken hangen (89-90 bij laden, 19-21
   # bij ontladen). Sinds v3 alleen nog diagnose (bms_stalled), geen invloed op hires.

@@ -448,14 +448,14 @@ dat te grof en te traag.
 ### Aanpak (v3, 28-10-2026, PBI-044): tellen in ampère, los van de BMS
 
 ```
-substitutions:  hires_top_pct 100, hires_floor_pct 7, hires_ah 50.5, hires_chg_factor 1.013,
+substitutions:  hires_top_pct 100, hires_floor_pct 7, hires_ah 47.2, hires_chg_factor 1.000,
                 hires_stall_pp 1.5 (diagnose)
 globals:        g_hires (pp), g_off (hires − BMS bij de laatste stap, restore_value), g_e_step (diagnose)
 
 battery_power_raw (33149) on_value:
   V  = 33133 (0,1V; zonder geldige waarde capaciteit/Ah = 405,5V)
-  I  = |P| / V ; ontladen (33135 = 1): −I ; laden: I × 1,013
-  dh = I · dt / 50,5Ah · 100 ; g_e_step += dh
+  I  = |P| / V ; ontladen (33135 = 1): −I ; laden: I × hires_chg_factor
+  dh = I · dt / hires_ah · 100 ; g_e_step += dh
   als bms >= 100 of bms <= 7: hires = bms
   anders:                     hires = clamp(hires + dh, 7.1, 99.9)
 
@@ -475,6 +475,15 @@ kwam op ±0,1 pp (rms 0,06; 2 parameters op 3 punten — opnieuw toetsen bij mee
 (stroom, 0,1A ≈ 41W) is bij nachtverbruik te grof; P/V geeft dezelfde ampères met 1W-resolutie. De band
 rond BMS + offset (v2) kostte op 20/21-10 4,8 pp: snel laden (hires in de band rond een trage BMS),
 bijtrekken na de 89%-stilstand en offset-slijtage.
+
+Herijking 13-11 (PBI-109): met 50,5 Ah / 1,013 kwam hires over vijf trajecten 03-11..13-11 steeds 4-6 pp
+te weinig aan bij het eindpunt (rms 5,4 pp; hires 12-13 toen de BMS 7 meldde), en in de stijgtrajecten
+boven 99,9 geklemd. Geen drift of meetfout — Solis P/V en de BMS-shunt lopen binnen 0,5% gelijk — maar
+de capaciteit tussen de eindpunten is sinds eind oktober 4-6% kleiner (47,2 Ah per 100 pp; cellen van
+~20 naar ~13 °C, SOH 97%). De oktoberfit hing op één 100→7-paar. Nu **47,2 Ah en laadfactor 1,000**:
+rms 1,2 pp, ±1-2,5 pp per traverse. Opnieuw fitten zodra de capaciteit weer verschuift (voorjaar);
+methode: `Home-Energy-Data/analysis/hires_drift_20261113/`. Geparkeerd: de firmware laat zelf leren van
+de misser bij elk anker (tegenover elkaar liggende ankers → capaciteit, hetzelfde anker → laadfactor).
 
 - **Geen band, geen offsetcorrectie meer**: tussen de eindpunten heeft de BMS geen betere informatie dan
   de telling. `battery_soc_offset` en `bms_stalled` blijven als diagnose (entity-ID's ongewijzigd);
@@ -496,7 +505,8 @@ bijtrekken na de 89%-stilstand en offset-slijtage.
   33133 sluit aan op 33135.
 
 Verificatie na de flash: per nieuw ijkpuntpaar de eindstand van hires (zonder vloer/plafond) tegen 7/100 —
-verwacht binnen ±1 pp (health-sessie).
+verwacht binnen ±2,5 pp (health-sessie; was ±1 pp op de oktoberfit). Een meerdaags traject zonder anker
+kan nog ~1 pp per 50 Ah laaddoorvoer per 1% laadfactorfout weglopen.
 
 ### Vorige aanpak (v2, 07-10 t/m 28-10-2026): BMS volgen rond BMS + offset
 
