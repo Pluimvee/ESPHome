@@ -85,7 +85,7 @@ Apart FC04-request (buiten bovenstaand blok, span 5, geen bridge nodig) voor de 
 | 33256 | U16 | 0.01A | Meter AC current C | idem |
 
 Apart FC04-request (los register, elke 15 min) voor de overdischarge-ondergrens — zie
-[Energieboekhouding](#energieboekhouding--capaciteit-baseremainingusabletarget_usable):
+[Energieboekhouding](#energieboekhouding--voorraad-in-ah-spanning-per-richting):
 
 | Register | Type | Eenheid | Naam | Noot |
 |---|---|---|---|---|
@@ -135,15 +135,16 @@ Wordt als vaste waarde **33** geschreven (geen read-modify-write):
 | `number.target_grid_power` | number | Doelvermogen in W (huis-conv), −10000…10000, stap 100; na een (her)start 0 (safe mode) |
 | `sensor.command_timer` | sensor | Resterende seconden van het opdrachtvenster (10s); 0 = safe mode — zie [Opdrachtvenster](#opdrachtvenster-15-min-en-safe-mode-pbi-046). Het bestaan van de sensor vertelt de EMS-strategie dat de firmware kwartier-opdrachten verwacht |
 | `number.target_soc` | number | Doel-SOC in %, 7…100, stap 0,1 (EMS rekent met 1 decimaal), default 80 — alleen relevant in charge/discharge |
-| `sensor.battery_capacity` | sensor | Accucapaciteit in kWh die er bij 100% nog uitkomt — **vaste** waarde `hires_ah × battery_discharge_v` (≈19,8) uit `substitutions`, sinds 14-11 niet meer de spec 20,48; geen HA-input, zie [Energieboekhouding](#energieboekhouding--capaciteit-baseremainingusabletarget_usable) |
+| `sensor.battery_capacity` | sensor | Volle accucapaciteit in **Ah**, geleerd van de ankers 100 en 7 (tot 14-11 kWh, vast 20,48) — zie [Energieboekhouding](#energieboekhouding--voorraad-in-ah-spanning-per-richting) |
 | `sensor.battery_bms_soc` | sensor | SOC %, ruwe BMS-waarde (1%-resolutie, onregelmatige update); tot 02-11 `battery_soc` |
 | `sensor.battery_soc_hires` | sensor | Hoger-resolutie SOC-schatting (2 decimalen, 10s): ampère-telling (P/V) los van de BMS; telling staat uit bij SOC 100 en ≤ 7 (daartussen 7,1 … 99,9), zie [Hoge-resolutie SOC](#hoge-resolutie-soc--coulomb-counting-tussen-bms-updates) |
 | `sensor.battery_soc_offset` | sensor | Diagnose: hires − BMS in pp |
 | `binary_sensor.battery_bms_soc_stalled` | binary | Diagnose: aan tijdens een BMS-stilstand (> 1,5pp energie sinds de laatste BMS-stap); tot 02-11 `bms_stalled` |
-| `sensor.base_energy` | sensor | Energie onder de overdischarge-ondergrens (kWh), niet bruikbaar — zie [Energieboekhouding](#energieboekhouding--capaciteit-baseremainingusabletarget_usable) |
-| `sensor.remaining_energy` | sensor | Totale accu-inhoud in kWh, afgeleid van `battery_soc_hires` — zie [Energieboekhouding](#energieboekhouding--capaciteit-baseremainingusabletarget_usable) |
-| `sensor.usable_energy` | sensor | `remaining_energy − base_energy` (kWh) — zie [Energieboekhouding](#energieboekhouding--capaciteit-baseremainingusabletarget_usable) |
-| `sensor.target_usable_energy` | sensor | `target_soc` uitgedrukt in kWh boven de ondergrens; observationeel, nog niet in `apply_mode` verwerkt — zie [Energieboekhouding](#energieboekhouding--capaciteit-baseremainingusabletarget_usable) |
+| `sensor.remaining_capacity` | sensor | Huidige inhoud in Ah, afgeleid van `battery_soc_hires` (verving 14-11 `remaining_energy`) — zie [Energieboekhouding](#energieboekhouding--voorraad-in-ah-spanning-per-richting) |
+| `sensor.base_capacity` | sensor | Deel onder de overdischarge-ondergrens (Ah), niet bruikbaar (verving `base_energy`) |
+| `sensor.discharge_voltage` / `sensor.charge_voltage` | sensor | Ah-gewogen lopend gemiddelde van de accuspanning per richting (V) |
+| `sensor.dischargeable_energy` | sensor | `(remaining − base) × discharge_voltage` in kWh: wat er nog uitkomt (verving `usable_energy`) |
+| `sensor.chargeable_energy` | sensor | `(capacity − remaining) × charge_voltage` in kWh: wat er nog in kan |
 | `sensor.grid_power` | sensor | Netmeter W (huis-conv: + = import), 5s, HA-visible |
 | `sensor.inverter_port_power` | sensor | AC grid port W (Solis-conv: + = export); tot 02-11 `inverter_power` |
 | `sensor.battery_power` | sensor | Accu DC W (33149, teken uit 33135; + = ontladen), 5s. Vervangt `solis_s6_eh3p_battery_power_net` in de EMS (PBI-080) |
@@ -223,7 +224,7 @@ voorspelt geen PV en bouwt geen buffer in: verwachte PV en reserve(kwartieren) z
 `target_soc` zo vaak kan bijstellen als het wil (sinds 18-10-2026, zie [Geschiedenis](#geschiedenis-pv-marge-en-anker-tot-18-10-2026)).
 
 ```
-BATTERY_WH    = 20480     # substitutions.battery_capacity_kwh
+BATTERY_WH    = g_capacity_ah x (charge: g_chg_v | anders g_dis_v)   # ~20,6 / 19,8 kWh, v4 PBI-109
 MAX_GRID_W    = 10000     # |setpoint|: meer neemt de Solis via 43133 niet aan
 I_LIM_A       = 25        # hoofdzekering per fase
 W_PER_A       = 690       # 3 x 230V: 1W setpoint = 1/690 A extra op elke fase
@@ -448,19 +449,20 @@ dat te grof en te traag.
 ### Aanpak (v3, 28-10-2026, PBI-044): tellen in ampère, los van de BMS
 
 ```
-substitutions:  hires_top_pct 100, hires_floor_pct 7, hires_ah 47.2, hires_chg_factor 1.000,
+substitutions:  hires_top_pct 100, hires_floor_pct 7, battery_capacity_ah_init 47.2 (startwaarde),
                 hires_stall_pp 1.5 (diagnose)
-globals:        g_hires (pp), g_off (hires − BMS bij de laatste stap, restore_value), g_e_step (diagnose)
+globals:        g_hires (pp), g_off (hires − BMS bij de laatste stap, restore_value), g_e_step (diagnose),
+                g_capacity_ah (Ah per 100 pp, geleerd — zie Energieboekhouding)
 
 battery_power_raw (33149) on_value:
-  V  = 33133 (0,1V; zonder geldige waarde capaciteit/Ah = 405,5V)
-  I  = |P| / V ; ontladen (33135 = 1): −I ; laden: I × hires_chg_factor
-  dh = I · dt / hires_ah · 100 ; g_e_step += dh
+  V  = 33133 (0,1V; zonder geldige waarde het lopende gemiddelde van deze richting)
+  I  = |P| / V ; ontladen (33135 = 1): −I ; laden: +I           # Ah in = Ah uit (v4, geen laadfactor)
+  dh = I · dt / g_capacity_ah · 100 ; g_e_step += dh ; g_anchor_ah += I · dt (niet op een anker)
   als bms >= 100 of bms <= 7: hires = bms
   anders:                     hires = clamp(hires + dh, 7.1, 99.9)
 
 battery_soc (33139) on_value, bij een echte wijziging prev → x:
-  als x >= 100 of x <= 7:          hires = x                          # herijking
+  als x >= 100 of x <= 7:          hires = x ; capaciteit leren       # herijking, zie Energieboekhouding
   anders als geen prev (opstart):  hires = x + g_off                  # bewaard over de reboot
   anders als prev was eindpunt:    hires = x ∓ 0,5                    # 100→99: 99,5 ; 7→8: 7,5
   anders:                          hires blijft staan                 # gewone stap
@@ -481,9 +483,9 @@ te weinig aan bij het eindpunt (rms 5,4 pp; hires 12-13 toen de BMS 7 meldde), e
 boven 99,9 geklemd. Geen drift of meetfout — Solis P/V en de BMS-shunt lopen binnen 0,5% gelijk — maar
 de capaciteit tussen de eindpunten is sinds eind oktober 4-6% kleiner (47,2 Ah per 100 pp; cellen van
 ~20 naar ~13 °C, SOH 97%). De oktoberfit hing op één 100→7-paar. Nu **47,2 Ah en laadfactor 1,000**:
-rms 1,2 pp, ±1-2,5 pp per traverse. Opnieuw fitten zodra de capaciteit weer verschuift (voorjaar);
-methode: `Home-Energy-Data/analysis/hires_drift_20261113/`. Geparkeerd: de firmware laat zelf leren van
-de misser bij elk anker (tegenover elkaar liggende ankers → capaciteit, hetzelfde anker → laadfactor).
+rms 1,2 pp, ±1-2,5 pp per traverse. Methode: `Home-Energy-Data/analysis/hires_drift_20261113/`.
+Sinds v4 (14-11) leert de firmware de capaciteit zelf van elk paar tegenover elkaar liggende ankers en is
+de laadfactor vervallen (Ah in = Ah uit) — zie [Energieboekhouding](#energieboekhouding--voorraad-in-ah-spanning-per-richting).
 
 - **Geen band, geen offsetcorrectie meer**: tussen de eindpunten heeft de BMS geen betere informatie dan
   de telling. `battery_soc_offset` en `bms_stalled` blijven als diagnose (entity-ID's ongewijzigd);
@@ -506,7 +508,7 @@ de misser bij elk anker (tegenover elkaar liggende ankers → capaciteit, hetzel
 
 Verificatie na de flash: per nieuw ijkpuntpaar de eindstand van hires (zonder vloer/plafond) tegen 7/100 —
 verwacht binnen ±2,5 pp (health-sessie; was ±1 pp op de oktoberfit). Een meerdaags traject zonder anker
-kan nog ~1 pp per 50 Ah laaddoorvoer per 1% laadfactorfout weglopen.
+kan nog ~1 pp per 50 Ah doorvoer per 1% verschil tussen Ah in en Ah uit (Solis-meting) weglopen.
 
 ### Vorige aanpak (v2, 07-10 t/m 28-10-2026): BMS volgen rond BMS + offset
 
@@ -661,73 +663,87 @@ implementatie doet nu hetzelfde: `fabs()` van de magnitude, teken expliciet uit 
 
 ---
 
-## Energieboekhouding — capaciteit, base/remaining/usable/target_usable
+## Energieboekhouding — voorraad in Ah, spanning per richting
 
-Vertaalt de coulomb-counted SOC-schatting naar kWh, met een gekalibreerde capaciteit i.p.v. de vroeger
-hardcoded 20000Wh-aanname.
+**v4 (PBI-109, 14-11-2026): de firmware is het magazijn, de ledger de financiële administratie.** De
+voorraad wordt in Ah bijgehouden: Ah in = Ah uit (geen laadfactor meer), het verlies verschijnt pas bij
+de omrekening naar kWh omdat de spanning per richting verschilt (laden 434-439 V, ontladen 419-424 V;
+verhouding 0,979 bij 22 °C, 0,972 bij 15 °C, ~2% lager bij 5,5 kW dan bij 1 kW). kWh is een afgeleide,
+omgerekend met een gemeten spanning per richting. Conventie: `*_capacity` = Ah, `*_energy` = kWh,
+`*_voltage` = V.
 
-### Accucapaciteit — `battery_capacity_kwh` (laadzijde) en `hires_ah × battery_discharge_v` (voorraad)
+Voorgeschiedenis: tot 14-11 rekenden de kWh-sensoren met de spec 20,48 kWh per 100 pp. Met 47,2 Ah per
+100 pp is dat 434 V, de laadspanning: de voorraad werd geboekt tegen laadspanning en geleverd tegen
+ontlaadspanning, zodat 1 kWh voorraad 0,965 kWh op de ontlaadteller gaf en de accuprijs in de ledger
+(#112) bij elke ontlading 3-5% klom. De tussenstap van 14-11 11:04 (vaste ontlaadspanning 419 V, 19,8 kWh
+per 100 pp) loste dat op voor het ontladen, maar liet de capaciteit een handmatige constante — vandaar v4.
 
-**Voorraad in kWh = wat er nog uitkomt (14-11-2026, PBI-109).** Tot 14-11 rekenden `base_energy`,
-`remaining_energy`, `target_usable` en `sensor.battery_capacity` met de spec 20,48 kWh per 100 pp. Met
-47,2 Ah per 100 pp is dat 434 V: de laadspanning. De voorraad werd dus geboekt tegen laadspanning en
-geleverd tegen ontlaadspanning (419-424 V over vijf trajecten 03-11..14-11), zodat 1 kWh voorraad 0,965
-kWh op de ontlaadteller gaf; de ledger (#112) zag de accuprijs daardoor bij elke ontlading 3-5% klimmen.
-Nu: **kWh per 100 pp = `hires_ah` × `battery_discharge_v` / 1000 = 47,2 × 419 = 19,8 kWh**, als product in
-de lambdas zodat een refit van `hires_ah` automatisch doordraagt. Vaste spanning, geen geleerd gemiddelde:
-de spreiding is 1-2% (~2% lager bij 5,5 kW dan bij 1 kW) en een lerende waarde zou de voorraad laten
-springen zonder dat er energie bewoog — precies wat de ledger niet kan onderscheiden. Samen met `hires_ah`
-herijken. Gevolg bij de flash: alle voorraadsensoren zakken in één stap ~3,4% (0,7 kWh bij een volle accu);
-`base_energy` volgt pas bij de volgende 33213-read (max. 15 min, ~0,05 kWh).
+### Capaciteit — `g_capacity_ah`, geleerd van de ankers
 
-**`battery_capacity_kwh` 20,48 kWh** (spec) blijft voor de laadzijde: `BATTERY_WH` in `apply_mode` (de
-laadsnelheid naar een doel; laden gaat tegen laadspanning, met 19,8 zou het 3-4% te traag zijn) en de
-terugvalspanning in `battery_soc_hires` bij een ongeldige 33133.
+De capaciteit (Ah per 100 pp) is de deler in de hires-telling én de basis van alle `*_capacity`-sensoren,
+en de firmware leert hem zelf. Tussen de ankers telt `g_anchor_ah` de netto Ah (+ = laden) sinds het
+laatste anker; `g_anchor_kind` onthoudt welk anker dat was (1 = BMS 100, −1 = BMS 7). Bij een BMS-stap
+op een anker:
 
-Was eerder een `number` die AppDaemon kon schrijven; dat is bewust vervallen — de waarde is statisch.
-`sensor.battery_capacity` publiceert 'm nog wel naar HA, puur ter inzage. **Let op**: de entiteit is
-daarmee van `number.` naar `sensor.` gegaan.
+```
+tegenover het vorige anker (100 → 7 of 7 → 100):
+    meting = |g_anchor_ah| / (TOP − FLOOR) × 100            # Ah per 100 pp
+    binnen ±capacity_learn_band (15%) van de huidige waarde:
+        g_capacity_ah += capacity_learn_rate (0,25) × (meting − g_capacity_ah)
+    anders: genegeerd + ESP_LOGW (reboot-gat, BMS-gril)
+hetzelfde anker (100 → 100, 7 → 7): geen informatie (Ah in = Ah uit), alleen reset
+altijd: g_anchor_kind = dit anker, g_anchor_ah = 0 ; op het anker zelf telt g_anchor_ah niet
+```
+
+De update valt op het anker, waar hires toch gelijk is aan de BMS, dus de capaciteitswijziging geeft
+geen sprong in hires. Leersnelheid 0,25 = geheugen van ~4 traverses; één traverse meet op ~1% (03-11..
+14-11: 47,8 / 47,0 / 47,1 / 46,8 / 47,0). Van de ankers en niet van de temperatuur: het seizoen beweegt
+langzaam en de firmware heeft geen betrouwbare temperatuuringang (gemeten ~0,9% per °C: 50,5 Ah bij
+~20 °C in oktober, 47 bij 13 °C in november; SOH 97%). Startwaarde `battery_capacity_ah_init` 47,2 (fit
+13-11), alleen gebruikt zolang er nog niets bewaard is. Alles `restore_value`: een nette herstart (OTA)
+schrijft eerst weg; stroomuitval kost hooguit 15 min van `g_anchor_ah` (flash_write_interval), en een
+daardoor afwijkende meting valt in de regel buiten de band.
+
+### Spanningen — `g_dis_v`, `g_chg_v`
+
+Ah-gewogen lopend gemiddelde per richting, bijgewerkt in `battery_power_raw on_value` met de gemeten
+spanning (33133): `v_mean += min(1, dAh / voltage_window_ah) × (v − v_mean)`, venster 47 Ah (één volle
+traverse). Ah-gewogen, zodat de rustspanning bij 0 A niet meetelt en vol vermogen zwaar weegt — zo komt
+de kWh-omrekening overeen met wat de tellers zien. Startwaarden 419 / 436 V (meting 03-11..14-11). De
+telling zelf gebruikt het gemiddelde van de richting alleen als terugval bij een ongeldige 33133.
 
 ### Register 33213 — Overdischarge SOC Mirror
 
 Losse FC04-read, elke 15 minuten (skip_updates 900 @ 1s update_interval) — bewust laagfrequent, deze
 instelling verandert in de praktijk vrijwel nooit. De **MIRROR** (33213), niet de instelling (43011): de
 mirror is wat de omvormer werkelijk toepast als ondergrens, de instelling zelf kan afwijken of vertragen.
+Bewaard in `g_floor_pct` (`restore_value`), omdat `base_capacity` anders na elke (her)start tot een
+kwartier op 0 stond.
 
-### `sensor.base_energy`
+### Sensoren
 
-Het deel van de accu-inhoud onder de overdischarge-ondergrens — niet-bruikbaar energiebudget:
-`base_energy = hires_ah × battery_discharge_v / 1000 × (33213 / 100)`. Herberekend via `on_value` van het 33213-register en
-opgeslagen in de global `g_base_energy_kwh` ("static mem", losgekoppeld van de eigen publicatiecadans).
-De sensor zelf publiceert elke 60s met een delta-filter (0.0005 kWh) — de waarde verandert vrijwel nooit.
+| sensor | eenheid | formule | cadans |
+|---|---|---|---|
+| `battery_capacity` | Ah | `g_capacity_ah` — volle capaciteit, geleerd (tot 14-11 kWh, vast 20,48) | 60s |
+| `remaining_capacity` | Ah | `battery_soc_hires / 100 × g_capacity_ah` (verving `remaining_energy`) | 10s |
+| `base_capacity` | Ah | `g_capacity_ah × g_floor_pct / 100` (verving `base_energy`) | 60s, delta 0,0005 |
+| `discharge_voltage` | V | `g_dis_v` | 60s |
+| `charge_voltage` | V | `g_chg_v` | 60s |
+| `dischargeable_energy` | kWh | `(remaining − base) × g_dis_v / 1000` (verving `usable_energy`) | 10s |
+| `chargeable_energy` | kWh | `(capacity − remaining) × g_chg_v / 1000` | 10s |
 
-`g_base_energy_kwh` heeft `restore_value: true`, juist omdat 33213 maar elke 15 minuten gelezen wordt:
-zonder bewaren stond `base_energy` na elke (her)start tot een kwartier op 0 en was `usable_energy` in dat
-venster gelijk aan `remaining_energy`. Flash-slijtage speelt hier niet — ESPHome's
-`RestoringGlobalsComponent` vergelijkt de waarde (`memcmp`) en schrijft alleen weg bij een échte wijziging,
-en die waarde verandert vrijwel nooit. De `initial_value: 0.0` geldt daarmee alleen nog bij de allereerste
-start, vóór er ooit iets bewaard is.
+`remaining_capacity` en de `*_energy`-sensoren zijn afgeleid van `battery_soc_hires` (niet van de
+onderliggende globals), zodat de ±0,5pp-band daarop automatisch meekomt. `target_usable_energy` is
+verwijderd (de EMS las het niet). `apply_mode` rekent zijn laadsnelheid met `g_capacity_ah × spanning van
+de opdrachtrichting` (laden tegen laadspanning, ontladen tegen ontlaadspanning).
 
-### `sensor.remaining_energy`
+Afnemers (PBI-113): `sensor.battery_capacity` wisselt van eenheid (kWh → Ah; HA meldt dat als
+statistiekwijziging) en `usable_energy` is hernoemd, dus firmware en EMS (`ems_strategy`,
+`ems_battery_ledger`) wisselen kort na elkaar. De EMS weigert een capaciteit buiten 10-25 en valt terug op
+20,48, dus een Ah-waarde breekt niets tot PBI-113 landt.
 
-Totale accu-inhoud in kWh die er nog uitkomt: `remaining_energy = battery_soc_hires / 100 × hires_ah ×
-battery_discharge_v / 1000`. Rechtstreeks
-afgeleid van `battery_soc_hires` (niet van de onderliggende globals), zodat de band-klem daarop
-automatisch meekomt — zie [Hoge-resolutie SOC](#hoge-resolutie-soc--coulomb-counting-tussen-bms-updates).
-`update_interval: 10s`, gelijk aan `battery_soc_hires`.
-
-### `sensor.usable_energy`
-
-`usable_energy = remaining_energy − base_energy` — het deel van de accu-inhoud dat daadwerkelijk bruikbaar
-is. `update_interval: 10s`.
-
-### `sensor.target_usable_energy`
-
-Het SOC-doel (`target_soc`, relevant in charge/discharge) uitgedrukt in kWh boven de overdischarge-
-ondergrens: `target_usable = hires_ah × battery_discharge_v / 1000 × (target_soc − 33213) / 100` — rechtstreeks vergelijkbaar
-met `usable_energy`. **Status: observationeel, nog niet in `apply_mode` verwerkt.** `target_soc` blijft de
-HA-facing %-waarde die de SOC-gap-logica in `apply_mode` aanstuurt; dit is een parallelle, kWh-equivalente
-weergave voor toekomstig gebruik.
+De capaciteit was tot 07-10 een `number` die AppDaemon kon schrijven; dat is bewust vervallen. **Let op**:
+de entiteit is daarmee van `number.` naar `sensor.` gegaan.
 
 ---
 
@@ -822,7 +838,7 @@ ook zoveel registers. Gecontroleerd 30-10: de Solis levert het blok van 31 regis
 - **interval 30s** → `apply_mode` (setpoint + eventueel RC-herbevestiging, zie [Modi](#modi)) — dit is tevens de keepalive tegen de RC-timeout van de Solis (ingesteld op 2 minuten via 43282, dus 4× marge).
 - **interval 5min** → config-registers (43029, 43110, 43140) gecontroleerd en alleen gecorrigeerd bij afwijking van de verwachte waarde; 43282 wordt elke cyclus **onvoorwaardelijk** herschreven (geen drift-check).
 - **interval 15min** → `publish_grid_metrics`, zie [Grid Metrics](#grid-metrics--tumbling-window-15-min).
-- **33213 (los FC04-request)** → elke 15 min (skip_updates 900), voedt `base_energy` — zie [Energieboekhouding](#energieboekhouding--capaciteit-baseremainingusabletarget_usable).
+- **33213 (los FC04-request)** → elke 15 min (skip_updates 900), voedt `base_energy` — zie [Energieboekhouding](#energieboekhouding--voorraad-in-ah-spanning-per-richting).
 - **`battery_soc_hires`/`remaining_energy`/`usable_energy`/`target_usable_energy`** → elke 10s; **`base_energy`** → elke 60s + delta-filter (verandert vrijwel nooit).
 
 ---

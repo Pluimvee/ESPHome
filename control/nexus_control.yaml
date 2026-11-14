@@ -5,11 +5,6 @@ substitutions:
   device_id: nexus-control
   build_root: !secret build_root
   friendly_name: Nexus Control
-  # Accucapaciteit volgens spec (laadzijde: 20,48 kWh / 47,2 Ah = 434 V, de laadspanning).
-  # Sinds 14-11 (PBI-109) alleen nog voor de laadsnelheid in apply_mode (laden gaat tegen
-  # laadspanning) en de terugvalspanning in de hires-telling. De voorraad in kWh gebruikt
-  # hires_ah × battery_discharge_v, zie daar.
-  battery_capacity_kwh: "20.48"
   # Eindpunten waarboven/-onder de coulomb-telling uitgaat en de BMS autoritatief is.
   # Gebruikt in battery_soc (ankering) én battery_soc_hires (berekening) — één plek,
   # zodat die twee niet uit elkaar kunnen lopen.
@@ -18,19 +13,23 @@ substitutions:
   # 100 blijft daardoor alleen haalbaar via een BMS-melding van 100 (les van 05-09).
   hires_top_pct: "100"
   hires_floor_pct: "7"
-  # hires v3 (PBI-044, 28-10-2026): tellen in ampère i.p.v. watt. Capaciteit en laadfactor
-  # gefit op ijkpuntparen (Solis P/V tegen BMS 7/100). Herijkt 13-11-2026 (PBI-109): de
-  # oktoberfit (50,5 / 1,013) telde 4-6 pp te weinig per traverse; de capaciteit tussen de
-  # eindpunten zakte 4-6% (cellen 20 → 13 °C). Vijf trajecten 03-11..13-11: rms 1,2 pp.
-  # Opnieuw toetsen zodra de capaciteit weer verschuift (voorjaar).
-  hires_ah: "47.2"
-  hires_chg_factor: "1.000"
-  # Ontlaadspanning (V) voor de voorraad in kWh (PBI-109, 14-11-2026): remaining/usable/base/
-  # target_usable en battery_capacity = hires_ah × battery_discharge_v. De voorraad werd geboekt
-  # tegen laadspanning (20,48 kWh = 47,2 Ah × 434 V) en geleverd tegen ~419 V, dus 1 kWh voorraad
-  # gaf 0,965 kWh op de ontlaadteller. Gemeten 419-424 V over vijf trajecten 03-11..14-11,
-  # ~2% lager bij 5,5 kW dan bij 1 kW. Vaste waarde, samen met hires_ah herijken.
-  battery_discharge_v: "419"
+  # hires v3 (PBI-044, 28-10-2026): tellen in ampère i.p.v. watt. v4 (PBI-109, 14-11-2026):
+  # de voorraad is Ah. Ah in = Ah uit (geen laadfactor meer); het verlies zit alleen in de
+  # omrekening naar kWh, omdat de spanning per richting verschilt (laden 434-439 V, ontladen
+  # 419-424 V). De capaciteit (Ah per 100 pp) leert de firmware zelf van elk paar tegenover
+  # elkaar liggende ankers (100 → 7 of 7 → 100): netto Ah / 93 pp, langzaam gemiddeld.
+  # Startwaarden = de fit van 13-11 (vijf trajecten 03-11..13-11, 47,2 Ah; oktober nog 50,5
+  # bij ~20 °C, ~0,9% per °C). Alleen gebruikt zolang er nog niets geleerd en bewaard is.
+  battery_capacity_ah_init: "47.2"
+  discharge_voltage_init: "419"
+  charge_voltage_init: "436"
+  # Leren: aandeel van een gemeten traverse in de capaciteit (0,25 = geheugen ~4 traverses;
+  # één traverse meet op ~1%), en de band waarbinnen een meting geaccepteerd wordt (±15% van
+  # de huidige waarde; daarbuiten is het geen capaciteit maar een reboot-gat of BMS-gril).
+  capacity_learn_rate: "0.25"
+  capacity_learn_band: "0.15"
+  # Spanningen: Ah-gewogen lopend gemiddelde per richting, venster één volle traverse (Ah).
+  voltage_window_ah: "47"
   # Energie (pp) sinds de laatste BMS-stap waarboven we een BMS-stilstand aannemen. Een
   # normale stap is ~1pp; de BMS blijft op vaste plekken hangen (89-90 bij laden, 19-21
   # bij ontladen). Sinds v3 alleen nog diagnose (bms_stalled), geen invloed op hires.
@@ -186,19 +185,42 @@ globals:
     restore_value: false
     initial_value: '-1.0'
 
-  # Memoized base_energy (kWh) — bijgewerkt via on_value van overdischarge_soc_mirror
-  # (33213), losgekoppeld van de publicatie-cadans van de base_energy-sensor zelf.
+  # Voorraadadministratie in Ah (v4, PBI-109, 14-11-2026). Alles restore_value: de capaciteit
+  # en de spanningen zijn geleerde waarden, de ankertelling loopt over dagen. Een nette
+  # herstart (OTA) schrijft eerst weg; stroomuitval kost hooguit 15 min (flash_write_interval).
   #
-  # restore_value omdat 33213 maar elke 15 min gelezen wordt: zonder bewaren stond
-  # base_energy na elke (her)start tot een kwartier op 0, en was usable_energy in dat
-  # venster gelijk aan remaining_energy. Slijtage is geen punt — ESPHome schrijft alleen
-  # weg als de waarde daadwerkelijk verandert (memcmp in RestoringGlobalsComponent), en
-  # deze verandert vrijwel nooit. De 0.0 hieronder geldt dus alleen nog bij de allereerste
-  # start, vóór er ooit een waarde is bewaard.
-  - id: g_base_energy_kwh
+  # Capaciteit (Ah per 100 pp): deler in de hires-telling en basis van alle *_capacity-sensoren.
+  # Bijgewerkt bij elk anker dat tegenover het vorige ligt (zie battery_soc on_value).
+  - id: g_capacity_ah
+    type: float
+    restore_value: true
+    initial_value: '${battery_capacity_ah_init}'
+  # Netto Ah (+ = laden) sinds het laatste anker, en welk anker dat was (1 = 100, -1 = 7,
+  # 0 = nog geen). Bij het volgende anker: tegenover elkaar → capaciteitsmeting; hetzelfde →
+  # geen informatie (Ah in = Ah uit).
+  - id: g_anchor_ah
     type: float
     restore_value: true
     initial_value: '0.0'
+  - id: g_anchor_kind
+    type: int
+    restore_value: true
+    initial_value: '0'
+  # Ah-gewogen lopend gemiddelde van de accuspanning per richting (V), venster voltage_window_ah.
+  - id: g_dis_v
+    type: float
+    restore_value: true
+    initial_value: '${discharge_voltage_init}'
+  - id: g_chg_v
+    type: float
+    restore_value: true
+    initial_value: '${charge_voltage_init}'
+  # Overdischarge-ondergrens (%) uit 33213, bewaard omdat dat register maar elke 15 min gelezen
+  # wordt: zonder bewaren stond base_capacity na elke (her)start tot een kwartier op 0.
+  - id: g_floor_pct
+    type: float
+    restore_value: true
+    initial_value: '${hires_floor_pct}.0'
 
   # Grid metrics tumbling-window globals (15 min, reset after publish)
   - id: g_grid_sum
@@ -340,6 +362,25 @@ sensor:
               if (endpoint) {
                 // Herijking: BMS is autoritatief.
                 h = x;
+                // Capaciteit leren (v4, PBI-109): een anker tegenover het vorige sluit een
+                // traverse af; de netto Ah sinds dat anker horen bij TOP − FLOOR pp. Hetzelfde
+                // anker zegt niets (Ah in = Ah uit). Op het anker is hires = BMS, dus de
+                // nieuwe capaciteit geeft geen sprong in hires.
+                int kind = (x >= TOP) ? 1 : -1;
+                if (id(g_anchor_kind) == -kind) {
+                  float meas = fabsf(id(g_anchor_ah)) / (TOP - FLOOR) * 100.0f;
+                  float cap = id(g_capacity_ah);
+                  if (fabsf(meas - cap) <= ${capacity_learn_band}f * cap) {
+                    id(g_capacity_ah) = cap + ${capacity_learn_rate}f * (meas - cap);
+                    ESP_LOGI("nexus", "capaciteit: traverse %.1f Ah = %.1f Ah/100pp, %.2f -> %.2f",
+                             id(g_anchor_ah), meas, cap, id(g_capacity_ah));
+                  } else {
+                    ESP_LOGW("nexus", "capaciteit: traverse %.1f Ah = %.1f Ah/100pp buiten de band rond %.2f, genegeerd",
+                             id(g_anchor_ah), meas, cap);
+                  }
+                }
+                id(g_anchor_kind) = kind;
+                id(g_anchor_ah) = 0.0f;
               } else if (prev < 0.0f) {
                 // Eerste melding na opstart: g_off (hires − BMS bij de laatste stap) is bewaard.
                 h = x + id(g_off);
@@ -381,30 +422,37 @@ sensor:
             uint32_t now = millis();
             if (id(g_batt_energy_last_ms) != 0 && id(g_batt_soc_last_raw) >= 0.0f) {
               const float TOP = ${hires_top_pct}.0f, FLOOR = ${hires_floor_pct}.0f;
-              const float AH = ${hires_ah}f;
+              const float AH = id(g_capacity_ah);
               float dt_h = (now - id(g_batt_energy_last_ms)) / 3600000.0f;
-              // Tellen in ampère (PBI-044): de spanning ligt bij laden hoger (tot 439V) dan bij
-              // ontladen (tot 394V), dus een vaste Wh/pp telde laden te zwaar. Zonder geldige
-              // spanning de nominale (capaciteit/Ah).
-              float v = id(battery_voltage_raw).state;
-              if (std::isnan(v) || v < 300.0f) v = ${battery_capacity_kwh} * 1000.0f / AH;
               // 33149 levert alleen betrouwbaar de magnitude; richting komt uit 33135
-              // (0=charge, 1=discharge) — zie battery_direction_raw. Laden × laadfactor:
-              // de Solis weegt ontladen ~1,3% zwaarder dan de BMS-shunt.
-              float i = fabsf(x) / v;
-              if (id(battery_direction_raw).has_state() && id(battery_direction_raw).state >= 0.5f) {
-                i = -i;  // discharge
+              // (0=charge, 1=discharge) — zie battery_direction_raw.
+              bool discharging = id(battery_direction_raw).has_state() && id(battery_direction_raw).state >= 0.5f;
+              // Tellen in ampère (PBI-044): de spanning ligt bij laden hoger (434-439 V) dan bij
+              // ontladen (419-424 V), dus een vaste Wh/pp telde laden te zwaar. Ah in = Ah uit
+              // (v4, PBI-109: geen laadfactor). Zonder geldige spanning het lopende gemiddelde
+              // van deze richting.
+              float v = id(battery_voltage_raw).state;
+              if (std::isnan(v) || v < 300.0f) {
+                v = discharging ? id(g_dis_v) : id(g_chg_v);
               } else {
-                i *= ${hires_chg_factor}f;
+                // Ah-gewogen lopend gemiddelde van de spanning per richting: de omrekening
+                // Ah → kWh voor de *_energy-sensoren en apply_mode.
+                float w = std::min(1.0f, fabsf(x) / v * dt_h / ${voltage_window_ah}.0f);
+                if (discharging) id(g_dis_v) += w * (v - id(g_dis_v));
+                else             id(g_chg_v) += w * (v - id(g_chg_v));
               }
+              float i = fabsf(x) / v;
+              if (discharging) i = -i;
               float dh = i * dt_h / AH * 100.0f;  // pp
               id(g_e_step) += dh;
 
               float bms = id(g_batt_soc_last_raw);
               if (bms >= TOP || bms <= FLOOR) {
                 id(g_hires) = bms;
+                id(g_anchor_ah) = 0.0f;  // op het anker telt de traverse nog niet
               } else {
                 id(g_hires) = std::min(TOP - 0.1f, std::max(FLOOR + 0.1f, id(g_hires) + dh));
+                id(g_anchor_ah) += i * dt_h;  // netto Ah sinds het laatste anker
               }
               id(g_off) = id(g_hires) - bms;  // voor de herstart, zie g_off
             }
@@ -651,7 +699,7 @@ sensor:
   # Hoger-resolutie SOC-schatting (v3, 28-10-2026, PBI-044). Ampère-telling op P/V
   # (33149/33133) die tussen de eindpunten los van de BMS loopt. De state wordt bijgewerkt
   # in battery_power_raw en battery_soc on_value; deze sensor publiceert alleen.
-  # apply_mode gebruikt 'm als soc-bron; remaining_energy/usable_energy zijn hiervan afgeleid.
+  # apply_mode gebruikt 'm als soc-bron; remaining_capacity en de *_energy-sensoren zijn hiervan afgeleid.
   #
   # Waarom los van de BMS: de BMS (Pylontech Force H3, fw 0.1.0.5) blijft op vaste plekken
   # hangen — bij laden op 89-90%, bij ontladen rond 19-21% — soms uren, en telt daarna door
@@ -851,7 +899,7 @@ sensor:
     on_value:
       then:
         - lambda: |-
-            id(g_base_energy_kwh) = ${hires_ah} * ${battery_discharge_v} / 1000.0f * x / 100.0f;
+            id(g_floor_pct) = x;
 
   # Brug-registers voor het holding-leesblok 43110-43140 (31 registers, één FC03 per minuut).
   # ESPHome voegt alleen exact aansluitende registers samen; zonder deze bruggen waren 43110,
@@ -894,58 +942,74 @@ sensor:
     register_count: 3   # 43137-43139
     skip_updates: 59
 
-  # Accucapaciteit als voorraad: wat er bij 100% nog uitkomt (hires_ah × ontlaadspanning,
-  # ~19,8 kWh), niet de spec van 20,48. Vaste waarde uit de substitutions, gepubliceerd zodat
-  # HA/AppDaemon (ems_strategy) met dezelfde kWh per pp rekent als remaining_energy.
+  # Voorraadadministratie (v4, PBI-109, 14-11-2026): de firmware is het magazijn en telt in
+  # Ah; kWh is een afgeleide met de gemeten spanning per richting. Conventie: *_capacity = Ah,
+  # *_energy = kWh, *_voltage = V. Geleerde waarden: zie de globals en nexus_control.md.
   - platform: template
     id: battery_capacity
     name: "Battery Capacity"
     icon: "mdi:battery-high"
-    device_class: energy_storage
     state_class: measurement
-    unit_of_measurement: "kWh"
+    unit_of_measurement: "Ah"
     accuracy_decimals: 2
-    update_interval: 300s
-    lambda: return ${hires_ah} * ${battery_discharge_v} / 1000.0f;
-
-  # base_energy: het deel van de accu-inhoud onder de overdischarge-ondergrens — niet
-  # bruikbaar energiebudget. Herberekend via on_value van overdischarge_soc_mirror
-  # (zie hierboven) in g_base_energy_kwh ("static mem"); deze sensor publiceert alleen,
-  # met een delta-filter omdat de waarde vrijwel nooit verandert.
-  - platform: template
-    id: base_energy
-    name: "Base Energy"
-    icon: "mdi:battery-alert-variant-outline"
-    device_class: energy_storage
-    state_class: measurement
-    unit_of_measurement: "kWh"
-    accuracy_decimals: 3
     update_interval: 60s
-    filters:
-      - delta: 0.0005
-    lambda: return id(g_base_energy_kwh);
+    lambda: return id(g_capacity_ah);
 
-  # remaining_energy: totale accu-inhoud in kWh die er nog uitkomt (ontlaadspanning), afgeleid
-  # van battery_soc_hires (niet rechtstreeks van de onderliggende globals) zodat de
-  # ±0,5pp-band daarop automatisch meekomt — zie Hoge-resolutie SOC in nexus_control.md.
+  # remaining_capacity: huidige inhoud in Ah, afgeleid van battery_soc_hires (niet rechtstreeks
+  # van de onderliggende globals) zodat de ±0,5pp-band daarop automatisch meekomt.
   - platform: template
-    id: remaining_energy
-    name: "Remaining Energy"
+    id: remaining_capacity
+    name: "Remaining Capacity"
     icon: "mdi:battery-charging-100"
-    device_class: energy_storage
     state_class: measurement
-    unit_of_measurement: "kWh"
+    unit_of_measurement: "Ah"
     accuracy_decimals: 3
     update_interval: 10s
     lambda: |-
       if (std::isnan(id(battery_soc_hires).state)) return NAN;
-      return id(battery_soc_hires).state / 100.0f * ${hires_ah} * ${battery_discharge_v} / 1000.0f;
+      return id(battery_soc_hires).state / 100.0f * id(g_capacity_ah);
 
-  # usable_energy: remaining_energy minus het niet-bruikbare deel onder de
-  # overdischarge-ondergrens (base_energy).
+  # base_capacity: het deel onder de overdischarge-ondergrens (33213, bewaard in g_floor_pct),
+  # niet bruikbaar. Delta-filter: de waarde verandert alleen met de geleerde capaciteit.
   - platform: template
-    id: usable_energy
-    name: "Usable Energy"
+    id: base_capacity
+    name: "Base Capacity"
+    icon: "mdi:battery-alert-variant-outline"
+    state_class: measurement
+    unit_of_measurement: "Ah"
+    accuracy_decimals: 3
+    update_interval: 60s
+    filters:
+      - delta: 0.0005
+    lambda: return id(g_capacity_ah) * id(g_floor_pct) / 100.0f;
+
+  # Ah-gewogen lopende gemiddelden van de accuspanning per richting (zie battery_power_raw).
+  - platform: template
+    id: discharge_voltage
+    name: "Discharge Voltage"
+    icon: "mdi:battery-arrow-down-outline"
+    device_class: voltage
+    state_class: measurement
+    unit_of_measurement: "V"
+    accuracy_decimals: 1
+    update_interval: 60s
+    lambda: return id(g_dis_v);
+  - platform: template
+    id: charge_voltage
+    name: "Charge Voltage"
+    icon: "mdi:battery-arrow-up-outline"
+    device_class: voltage
+    state_class: measurement
+    unit_of_measurement: "V"
+    accuracy_decimals: 1
+    update_interval: 60s
+    lambda: return id(g_chg_v);
+
+  # dischargeable_energy: wat er boven de ondergrens nog uit kan, in kWh tegen ontlaadspanning
+  # (vervangt usable_energy, dat tegen laadspanning rekende en zo ~3,5% te veel beloofde).
+  - platform: template
+    id: dischargeable_energy
+    name: "Dischargeable Energy"
     icon: "mdi:battery-heart-variant"
     device_class: energy_storage
     state_class: measurement
@@ -953,25 +1017,24 @@ sensor:
     accuracy_decimals: 3
     update_interval: 10s
     lambda: |-
-      if (std::isnan(id(remaining_energy).state) || !id(base_energy).has_state()) return NAN;
-      return id(remaining_energy).state - id(base_energy).state;
+      if (std::isnan(id(battery_soc_hires).state)) return NAN;
+      float ah = (id(battery_soc_hires).state - id(g_floor_pct)) / 100.0f * id(g_capacity_ah);
+      return ah * id(g_dis_v) / 1000.0f;
 
-  # target_usable: het SOC-doel (charge/discharge) uitgedrukt in kWh boven de overdischarge-
-  # ondergrens, rechtstreeks vergelijkbaar met usable_energy. Vervangt niet target_soc zelf
-  # (dat blijft de HA-facing %-waarde) — apply_mode kan dit intern gebruiken i.p.v. losse
-  # %-rekenwerk in de SOC-gap-logica.
+  # chargeable_energy: wat er nog in kan tot 100%, in kWh tegen laadspanning.
   - platform: template
-    id: target_usable
-    name: "Target Usable Energy"
-    icon: "mdi:battery-arrow-up-outline"
+    id: chargeable_energy
+    name: "Chargeable Energy"
+    icon: "mdi:battery-plus-variant"
     device_class: energy_storage
     state_class: measurement
     unit_of_measurement: "kWh"
     accuracy_decimals: 3
     update_interval: 10s
     lambda: |-
-      if (!id(overdischarge_soc_mirror).has_state()) return NAN;
-      return ${hires_ah} * ${battery_discharge_v} / 1000.0f * (id(target_soc_number).state - id(overdischarge_soc_mirror).state) / 100.0f;
+      if (std::isnan(id(battery_soc_hires).state)) return NAN;
+      float ah = (${hires_top_pct}.0f - id(battery_soc_hires).state) / 100.0f * id(g_capacity_ah);
+      return ah * id(g_chg_v) / 1000.0f;
 
   # Grid metrics — published every 15 min by publish_grid_metrics script
   - platform: template
@@ -1404,7 +1467,9 @@ script:
             return;
           }
 
-          const float BATTERY_WH  = ${battery_capacity_kwh} * 1000.0f;
+          // Capaciteit in Wh in de richting van de opdracht (v4, PBI-109): geleerde Ah × de
+          // gemeten spanning van die richting (laden tegen laadspanning).
+          const float BATTERY_WH  = id(g_capacity_ah) * ((mode == "charge") ? id(g_chg_v) : id(g_dis_v));
           // MAX_GRID_W: bovengrens op |setpoint| (de totale grid-aanvraag). Meer dan 10kW neemt
           // de Solis via 43133 niet aan; de aansluiting (3x25A) zou wel meer kunnen.
           const float MAX_GRID_W  = 10000.0f;
