@@ -5,8 +5,10 @@ substitutions:
   device_id: nexus-control
   build_root: !secret build_root
   friendly_name: Nexus Control
-  # Accucapaciteit volgens spec. Vaste waarde (geen HA-input meer): hij komt overeen met
-  # de remaining kWh en SOC die de BMS zelf rapporteert, en verandert niet.
+  # Accucapaciteit volgens spec (laadzijde: 20,48 kWh / 47,2 Ah = 434 V, de laadspanning).
+  # Sinds 14-11 (PBI-109) alleen nog voor de laadsnelheid in apply_mode (laden gaat tegen
+  # laadspanning) en de terugvalspanning in de hires-telling. De voorraad in kWh gebruikt
+  # hires_ah × battery_discharge_v, zie daar.
   battery_capacity_kwh: "20.48"
   # Eindpunten waarboven/-onder de coulomb-telling uitgaat en de BMS autoritatief is.
   # Gebruikt in battery_soc (ankering) én battery_soc_hires (berekening) — één plek,
@@ -23,6 +25,12 @@ substitutions:
   # Opnieuw toetsen zodra de capaciteit weer verschuift (voorjaar).
   hires_ah: "47.2"
   hires_chg_factor: "1.000"
+  # Ontlaadspanning (V) voor de voorraad in kWh (PBI-109, 14-11-2026): remaining/usable/base/
+  # target_usable en battery_capacity = hires_ah × battery_discharge_v. De voorraad werd geboekt
+  # tegen laadspanning (20,48 kWh = 47,2 Ah × 434 V) en geleverd tegen ~419 V, dus 1 kWh voorraad
+  # gaf 0,965 kWh op de ontlaadteller. Gemeten 419-424 V over vijf trajecten 03-11..14-11,
+  # ~2% lager bij 5,5 kW dan bij 1 kW. Vaste waarde, samen met hires_ah herijken.
+  battery_discharge_v: "419"
   # Energie (pp) sinds de laatste BMS-stap waarboven we een BMS-stilstand aannemen. Een
   # normale stap is ~1pp; de BMS blijft op vaste plekken hangen (89-90 bij laden, 19-21
   # bij ontladen). Sinds v3 alleen nog diagnose (bms_stalled), geen invloed op hires.
@@ -843,7 +851,7 @@ sensor:
     on_value:
       then:
         - lambda: |-
-            id(g_base_energy_kwh) = ${battery_capacity_kwh} * x / 100.0f;
+            id(g_base_energy_kwh) = ${hires_ah} * ${battery_discharge_v} / 1000.0f * x / 100.0f;
 
   # Brug-registers voor het holding-leesblok 43110-43140 (31 registers, één FC03 per minuut).
   # ESPHome voegt alleen exact aansluitende registers samen; zonder deze bruggen waren 43110,
@@ -886,9 +894,9 @@ sensor:
     register_count: 3   # 43137-43139
     skip_updates: 59
 
-  # Accucapaciteit volgens spec — vaste waarde uit de substitutions, alleen gepubliceerd
-  # zodat HA/AppDaemon de aanname kan zien. Geen input meer: hij komt overeen met de
-  # remaining kWh en SOC die de BMS zelf rapporteert.
+  # Accucapaciteit als voorraad: wat er bij 100% nog uitkomt (hires_ah × ontlaadspanning,
+  # ~19,8 kWh), niet de spec van 20,48. Vaste waarde uit de substitutions, gepubliceerd zodat
+  # HA/AppDaemon (ems_strategy) met dezelfde kWh per pp rekent als remaining_energy.
   - platform: template
     id: battery_capacity
     name: "Battery Capacity"
@@ -898,7 +906,7 @@ sensor:
     unit_of_measurement: "kWh"
     accuracy_decimals: 2
     update_interval: 300s
-    lambda: return ${battery_capacity_kwh};
+    lambda: return ${hires_ah} * ${battery_discharge_v} / 1000.0f;
 
   # base_energy: het deel van de accu-inhoud onder de overdischarge-ondergrens — niet
   # bruikbaar energiebudget. Herberekend via on_value van overdischarge_soc_mirror
@@ -917,9 +925,9 @@ sensor:
       - delta: 0.0005
     lambda: return id(g_base_energy_kwh);
 
-  # remaining_energy: totale accu-inhoud in kWh, afgeleid van battery_soc_hires (niet
-  # rechtstreeks van de onderliggende globals) zodat de ±0,5pp-band daarop automatisch
-  # meekomt — zie Hoge-resolutie SOC in nexus_control.md.
+  # remaining_energy: totale accu-inhoud in kWh die er nog uitkomt (ontlaadspanning), afgeleid
+  # van battery_soc_hires (niet rechtstreeks van de onderliggende globals) zodat de
+  # ±0,5pp-band daarop automatisch meekomt — zie Hoge-resolutie SOC in nexus_control.md.
   - platform: template
     id: remaining_energy
     name: "Remaining Energy"
@@ -931,7 +939,7 @@ sensor:
     update_interval: 10s
     lambda: |-
       if (std::isnan(id(battery_soc_hires).state)) return NAN;
-      return id(battery_soc_hires).state / 100.0f * ${battery_capacity_kwh};
+      return id(battery_soc_hires).state / 100.0f * ${hires_ah} * ${battery_discharge_v} / 1000.0f;
 
   # usable_energy: remaining_energy minus het niet-bruikbare deel onder de
   # overdischarge-ondergrens (base_energy).
@@ -963,7 +971,7 @@ sensor:
     update_interval: 10s
     lambda: |-
       if (!id(overdischarge_soc_mirror).has_state()) return NAN;
-      return ${battery_capacity_kwh} * (id(target_soc_number).state - id(overdischarge_soc_mirror).state) / 100.0f;
+      return ${hires_ah} * ${battery_discharge_v} / 1000.0f * (id(target_soc_number).state - id(overdischarge_soc_mirror).state) / 100.0f;
 
   # Grid metrics — published every 15 min by publish_grid_metrics script
   - platform: template

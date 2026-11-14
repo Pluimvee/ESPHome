@@ -135,7 +135,7 @@ Wordt als vaste waarde **33** geschreven (geen read-modify-write):
 | `number.target_grid_power` | number | Doelvermogen in W (huis-conv), −10000…10000, stap 100; na een (her)start 0 (safe mode) |
 | `sensor.command_timer` | sensor | Resterende seconden van het opdrachtvenster (10s); 0 = safe mode — zie [Opdrachtvenster](#opdrachtvenster-15-min-en-safe-mode-pbi-046). Het bestaan van de sensor vertelt de EMS-strategie dat de firmware kwartier-opdrachten verwacht |
 | `number.target_soc` | number | Doel-SOC in %, 7…100, stap 0,1 (EMS rekent met 1 decimaal), default 80 — alleen relevant in charge/discharge |
-| `sensor.battery_capacity` | sensor | Accucapaciteit in kWh — **vaste** waarde (20.48) uit `substitutions`, alleen gepubliceerd ter inzage; geen HA-input meer, zie [Energieboekhouding](#energieboekhouding--capaciteit-baseremainingusabletarget_usable) |
+| `sensor.battery_capacity` | sensor | Accucapaciteit in kWh die er bij 100% nog uitkomt — **vaste** waarde `hires_ah × battery_discharge_v` (≈19,8) uit `substitutions`, sinds 14-11 niet meer de spec 20,48; geen HA-input, zie [Energieboekhouding](#energieboekhouding--capaciteit-baseremainingusabletarget_usable) |
 | `sensor.battery_bms_soc` | sensor | SOC %, ruwe BMS-waarde (1%-resolutie, onregelmatige update); tot 02-11 `battery_soc` |
 | `sensor.battery_soc_hires` | sensor | Hoger-resolutie SOC-schatting (2 decimalen, 10s): ampère-telling (P/V) los van de BMS; telling staat uit bij SOC 100 en ≤ 7 (daartussen 7,1 … 99,9), zie [Hoge-resolutie SOC](#hoge-resolutie-soc--coulomb-counting-tussen-bms-updates) |
 | `sensor.battery_soc_offset` | sensor | Diagnose: hires − BMS in pp |
@@ -666,12 +666,23 @@ implementatie doet nu hetzelfde: `fabs()` van de magnitude, teken expliciet uit 
 Vertaalt de coulomb-counted SOC-schatting naar kWh, met een gekalibreerde capaciteit i.p.v. de vroeger
 hardcoded 20000Wh-aanname.
 
-### Accucapaciteit — `substitutions.battery_capacity_kwh`
+### Accucapaciteit — `battery_capacity_kwh` (laadzijde) en `hires_ah × battery_discharge_v` (voorraad)
 
-**Vaste waarde: 20.48 kWh** (spec van de accu; komt overeen met de remaining kWh en SOC die de BMS zelf
-rapporteert). Staat als substitution bovenaan het bestand en wordt op alle plekken gebruikt die capaciteit
-nodig hebben: `battery_soc_hires`, `base_energy`, `remaining_energy`, `target_usable` én `BATTERY_WH` in
-`apply_mode`. Daarmee vervalt de vroegere losse 20000Wh-aanname in de sturing.
+**Voorraad in kWh = wat er nog uitkomt (14-11-2026, PBI-109).** Tot 14-11 rekenden `base_energy`,
+`remaining_energy`, `target_usable` en `sensor.battery_capacity` met de spec 20,48 kWh per 100 pp. Met
+47,2 Ah per 100 pp is dat 434 V: de laadspanning. De voorraad werd dus geboekt tegen laadspanning en
+geleverd tegen ontlaadspanning (419-424 V over vijf trajecten 03-11..14-11), zodat 1 kWh voorraad 0,965
+kWh op de ontlaadteller gaf; de ledger (#112) zag de accuprijs daardoor bij elke ontlading 3-5% klimmen.
+Nu: **kWh per 100 pp = `hires_ah` × `battery_discharge_v` / 1000 = 47,2 × 419 = 19,8 kWh**, als product in
+de lambdas zodat een refit van `hires_ah` automatisch doordraagt. Vaste spanning, geen geleerd gemiddelde:
+de spreiding is 1-2% (~2% lager bij 5,5 kW dan bij 1 kW) en een lerende waarde zou de voorraad laten
+springen zonder dat er energie bewoog — precies wat de ledger niet kan onderscheiden. Samen met `hires_ah`
+herijken. Gevolg bij de flash: alle voorraadsensoren zakken in één stap ~3,4% (0,7 kWh bij een volle accu);
+`base_energy` volgt pas bij de volgende 33213-read (max. 15 min, ~0,05 kWh).
+
+**`battery_capacity_kwh` 20,48 kWh** (spec) blijft voor de laadzijde: `BATTERY_WH` in `apply_mode` (de
+laadsnelheid naar een doel; laden gaat tegen laadspanning, met 19,8 zou het 3-4% te traag zijn) en de
+terugvalspanning in `battery_soc_hires` bij een ongeldige 33133.
 
 Was eerder een `number` die AppDaemon kon schrijven; dat is bewust vervallen — de waarde is statisch.
 `sensor.battery_capacity` publiceert 'm nog wel naar HA, puur ter inzage. **Let op**: de entiteit is
@@ -686,7 +697,7 @@ mirror is wat de omvormer werkelijk toepast als ondergrens, de instelling zelf k
 ### `sensor.base_energy`
 
 Het deel van de accu-inhoud onder de overdischarge-ondergrens — niet-bruikbaar energiebudget:
-`base_energy = battery_capacity × (33213 / 100)`. Herberekend via `on_value` van het 33213-register en
+`base_energy = hires_ah × battery_discharge_v / 1000 × (33213 / 100)`. Herberekend via `on_value` van het 33213-register en
 opgeslagen in de global `g_base_energy_kwh` ("static mem", losgekoppeld van de eigen publicatiecadans).
 De sensor zelf publiceert elke 60s met een delta-filter (0.0005 kWh) — de waarde verandert vrijwel nooit.
 
@@ -699,7 +710,8 @@ start, vóór er ooit iets bewaard is.
 
 ### `sensor.remaining_energy`
 
-Totale accu-inhoud in kWh: `remaining_energy = battery_soc_hires / 100 × battery_capacity`. Rechtstreeks
+Totale accu-inhoud in kWh die er nog uitkomt: `remaining_energy = battery_soc_hires / 100 × hires_ah ×
+battery_discharge_v / 1000`. Rechtstreeks
 afgeleid van `battery_soc_hires` (niet van de onderliggende globals), zodat de band-klem daarop
 automatisch meekomt — zie [Hoge-resolutie SOC](#hoge-resolutie-soc--coulomb-counting-tussen-bms-updates).
 `update_interval: 10s`, gelijk aan `battery_soc_hires`.
@@ -712,7 +724,7 @@ is. `update_interval: 10s`.
 ### `sensor.target_usable_energy`
 
 Het SOC-doel (`target_soc`, relevant in charge/discharge) uitgedrukt in kWh boven de overdischarge-
-ondergrens: `target_usable = battery_capacity × (target_soc − 33213) / 100` — rechtstreeks vergelijkbaar
+ondergrens: `target_usable = hires_ah × battery_discharge_v / 1000 × (target_soc − 33213) / 100` — rechtstreeks vergelijkbaar
 met `usable_energy`. **Status: observationeel, nog niet in `apply_mode` verwerkt.** `target_soc` blijft de
 HA-facing %-waarde die de SOC-gap-logica in `apply_mode` aanstuurt; dit is een parallelle, kWh-equivalente
 weergave voor toekomstig gebruik.
