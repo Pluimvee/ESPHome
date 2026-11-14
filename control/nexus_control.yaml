@@ -33,13 +33,20 @@ substitutions:
   # Omvormer-standby (PBI-093, 14-11-2026): ~81 W die de Solis ook trekt als de accu niets doet
   # (hij komt nooit in zijn eigen Standby-status, ook niet in een hold-nacht: ~1,9 kWh/dag).
   # Geleerd als EMA van Inverter Loss over samples met |accu| < inverter_idle_w, tijdconstante
-  # inverter_standby_tau_s aan zulke samples (5 s per sample). Het rendement is daarmee alleen
-  # conversie, en alleen vanaf inverter_eff_min_w: onder ~500 W is DC − AC ruis (een offset van
-  # ±10 W tussen beide metingen is al 10 pp bij 100 W).
+  # inverter_standby_tau_s aan zulke samples (5 s per sample).
   inverter_standby_init: "81"
   inverter_idle_w: "30"
   inverter_standby_tau_s: "3600"
-  inverter_eff_min_w: "300"
+  # Rendement = alleen conversie, en als energieverhouding (user 14-11): momentaan vermogen is
+  # onder ~500 W ruis (33149 springt in 43 W-stappen, ±10 W offset DC/AC = 10 pp bij 100 W), maar
+  # over energie middelt dat uit en is de stand-by precies vermogen × tijd. Venster: doorvoer in
+  # Wh waarover geteld wordt (exponentieel vergeten naar rato van de doorvoer, ~een halve dag);
+  # pas publiceren vanaf inverter_eff_min_wh in het venster.
+  inverter_eff_window_wh: "20000"
+  inverter_eff_min_wh: "1000"
+  # Lerende waarden (spanningen, stand-by, rendementsvenster) gaan zo vaak naar flash. Zie
+  # globals: flash-slijtage.
+  learn_save_interval: "12h"
   # Energie (pp) sinds de laatste BMS-stap waarboven we een BMS-stilstand aannemen. Een
   # normale stap is ~1pp; de BMS blijft op vaste plekken hangen (89-90 bij laden, 19-21
   # bij ontladen). Sinds v3 alleen nog diagnose (bms_stalled), geen invloed op hires.
@@ -62,6 +69,22 @@ esphome:
   project:
     name: 'EcoGrid.Nexus Control'
     version: ${version}
+  # Lerende waarden terug uit hun bewaarde tweeling (zie globals: flash-slijtage); priority 600
+  # is ná het herstellen van de globals (HARDWARE, 800).
+  on_boot:
+    priority: 600
+    then:
+      - lambda: |-
+          id(g_dis_v) = id(g_dis_v_s);
+          id(g_chg_v) = id(g_chg_v_s);
+          id(g_standby_w) = id(g_standby_w_s);
+          id(g_eff_e_wh) = id(g_eff_e_s);
+          id(g_eff_l_wh) = id(g_eff_l_s);
+  # Nette herstart (OTA): eerst de lerende waarden naar de tweeling. De shutdown-hooks lopen in
+  # omgekeerde prioriteit, dus deze trigger (600) komt vóór het wegschrijven van de globals (800).
+  on_shutdown:
+    then:
+      - script.execute: save_learned
 
 esp32:
   board: esp32dev
@@ -216,26 +239,64 @@ globals:
     type: int
     restore_value: true
     initial_value: '0'
+  # Flash-slijtage (user 14-11): een restore_value-global gaat bij elke wijziging naar NVS, hooguit
+  # elke flash_write_interval (15 min). Dat is nodig voor g_off (hires over een herstart) en
+  # g_anchor_ah (de lopende traverse), en onschuldig voor waarden die zelden veranderen
+  # (g_capacity_ah, g_anchor_kind, g_floor_pct). De lerende gemiddelden hieronder veranderen
+  # elke 5 s maar mogen gerust een halve dag leren kwijtraken: die leven in gewone globals en
+  # gaan via save_learned elke learn_save_interval (12 h) en bij een nette herstart naar hun
+  # bewaarde tweeling (*_s), waaruit on_boot ze terugzet. Twee NVS-writes per dag per waarde.
+  #
   # Ah-gewogen lopend gemiddelde van de accuspanning per richting (V), venster voltage_window_ah.
   - id: g_dis_v
     type: float
-    restore_value: true
+    restore_value: false
     initial_value: '${discharge_voltage_init}'
   - id: g_chg_v
+    type: float
+    restore_value: false
+    initial_value: '${charge_voltage_init}'
+  - id: g_dis_v_s
+    type: float
+    restore_value: true
+    initial_value: '${discharge_voltage_init}'
+  - id: g_chg_v_s
     type: float
     restore_value: true
     initial_value: '${charge_voltage_init}'
   # Overdischarge-ondergrens (%) uit 33213, bewaard omdat dat register maar elke 15 min gelezen
-  # wordt: zonder bewaren stond base_capacity na elke (her)start tot een kwartier op 0.
+  # wordt: zonder bewaren stond reserved_capacity na elke (her)start tot een kwartier op 0.
   - id: g_floor_pct
     type: float
     restore_value: true
     initial_value: '${hires_floor_pct}.0'
-  # Geleerde omvormer-standby (W, PBI-093), bijgewerkt in inverter_loss.
+  # Geleerde omvormer-standby (W, PBI-093), bijgewerkt in inverter_loss; tweeling zie boven.
   - id: g_standby_w
+    type: float
+    restore_value: false
+    initial_value: '${inverter_standby_init}'
+  - id: g_standby_w_s
     type: float
     restore_value: true
     initial_value: '${inverter_standby_init}'
+  # Rendementsvenster (PBI-093, energie): DC-doorvoer en conversieverlies in Wh, exponentieel
+  # vergeten naar rato van de doorvoer (inverter_eff_window_wh). Bijgewerkt in inverter_loss.
+  - id: g_eff_e_wh
+    type: float
+    restore_value: false
+    initial_value: '0.0'
+  - id: g_eff_l_wh
+    type: float
+    restore_value: false
+    initial_value: '0.0'
+  - id: g_eff_e_s
+    type: float
+    restore_value: true
+    initial_value: '0.0'
+  - id: g_eff_l_s
+    type: float
+    restore_value: true
+    initial_value: '0.0'
 
   # Grid metrics tumbling-window globals (15 min, reset after publish)
   - id: g_grid_sum
@@ -690,8 +751,16 @@ sensor:
                  loss, b, p);
         return 0.0f;
       }
+      const float dt_h = 5.0f / 3600.0f;  // update_interval
       if (fabsf(b) < ${inverter_idle_w}.0f) {
         id(g_standby_w) += (5.0f / ${inverter_standby_tau_s}.0f) * (loss - id(g_standby_w));
+      } else {
+        // Rendementsvenster (energie): doorvoer en conversieverlies (verlies − stand-by, niet
+        // per sample afgekapt: ruis middelt dan uit) in Wh, vergeten naar rato van de doorvoer.
+        float de = fabsf(b) * dt_h;
+        float f = 1.0f - de / ${inverter_eff_window_wh}.0f;
+        id(g_eff_e_wh) = id(g_eff_e_wh) * f + de;
+        id(g_eff_l_wh) = id(g_eff_l_wh) * f + (loss - id(g_standby_w)) * dt_h;
       }
       return loss;
 
@@ -708,11 +777,12 @@ sensor:
     update_interval: 60s
     lambda: return id(g_standby_w);
 
-  # Omvormerrendement, alleen conversie (PBI-093, 14-11; tot dan incl. stand-by, user 02-11):
-  # 1 − max(0, verlies − stand-by) / |accu-DC|, over de 30s-gemiddelden. Alleen vanaf
-  # inverter_eff_min_w: daaronder is het verschil DC − AC ruis en domineert de stand-by
-  # (200 W gaf ~60%, wat niets over de omvormer zegt). In rust NAN: er wordt niets omgezet,
-  # de stand-by staat in inverter_standby. Boven 100% is een negatief verlies (daar gelogd): max 100.
+  # Omvormerrendement, alleen conversie en als energieverhouding (PBI-093, user 14-11; tot dan
+  # momentaan incl. stand-by, user 02-11): 1 − conversieverlies-Wh / doorvoer-Wh over het
+  # rendementsvenster (g_eff_*, zie inverter_loss). Momentaan vermogen was onder ~500 W ruis
+  # (200 W gaf ~60%, wat niets over de omvormer zegt); over energie middelt dat uit en vermogens
+  # onder de stand-by wegen in de som nauwelijks mee. Altijd een waarde zodra het venster
+  # inverter_eff_min_wh bevat; max 100 (negatief verlies wordt bij inverter_loss gelogd).
   - platform: template
     id: inverter_efficiency
     name: "Inverter Efficiency"
@@ -720,13 +790,10 @@ sensor:
     unit_of_measurement: "%"
     state_class: measurement
     accuracy_decimals: 1
-    update_interval: 5s
+    update_interval: 60s
     lambda: |-
-      float b = id(battery_power_avg).state, p = id(grid_port_power_avg).state;
-      if (std::isnan(b) || std::isnan(p)) return NAN;
-      if (fabsf(b) < ${inverter_eff_min_w}.0f) return NAN;
-      float conv = std::max(0.0f, (b - p) - id(g_standby_w));
-      return std::min(100.0f, (1.0f - conv / fabsf(b)) * 100.0f);
+      if (id(g_eff_e_wh) < ${inverter_eff_min_wh}.0f) return NAN;
+      return std::min(100.0f, (1.0f - id(g_eff_l_wh) / id(g_eff_e_wh)) * 100.0f);
 
   # Hoger-resolutie SOC-schatting (v3, 28-10-2026, PBI-044). Ampère-telling op P/V
   # (33149/33133) die tussen de eindpunten los van de BMS loopt. De state wordt bijgewerkt
@@ -1001,11 +1068,11 @@ sensor:
       if (std::isnan(id(battery_soc_hires).state)) return NAN;
       return id(battery_soc_hires).state / 100.0f * id(g_capacity_ah);
 
-  # base_capacity: het deel onder de overdischarge-ondergrens (33213, bewaard in g_floor_pct),
+  # reserved_capacity: het deel onder de overdischarge-ondergrens (33213, bewaard in g_floor_pct),
   # niet bruikbaar. Delta-filter: de waarde verandert alleen met de geleerde capaciteit.
   - platform: template
-    id: base_capacity
-    name: "Base Capacity"
+    id: reserved_capacity
+    name: "Reserved Capacity"
     icon: "mdi:battery-alert-variant-outline"
     state_class: measurement
     unit_of_measurement: "Ah"
@@ -1383,6 +1450,11 @@ number:
     skip_updates: 3600
 
 interval:
+  # Lerende waarden twee keer per dag naar flash (zie globals: flash-slijtage).
+  - interval: ${learn_save_interval}
+    then:
+      - script.execute: save_learned
+
   # Controleer de configuratieregisters elke 5 minuten en corrigeer indien nodig
   - interval: 5min
     then:
@@ -1422,6 +1494,18 @@ interval:
       - script.execute: publish_grid_metrics
 
 script:
+  # Lerende waarden naar hun bewaarde tweeling (zie globals: flash-slijtage). ESPHome schrijft
+  # een restore-global alleen weg als hij echt veranderd is, dus dit kost per waarde één
+  # NVS-write per aanroep.
+  - id: save_learned
+    then:
+      - lambda: |-
+          id(g_dis_v_s) = id(g_dis_v);
+          id(g_chg_v_s) = id(g_chg_v);
+          id(g_standby_w_s) = id(g_standby_w);
+          id(g_eff_e_s) = id(g_eff_e_wh);
+          id(g_eff_l_s) = id(g_eff_l_wh);
+
   # Opdrachtvenster (PBI-046, 22-10-2026): elke opdracht (set_mode, of een schrijfactie van
   # control_mode, target_soc of target_grid) opent een venster van ${command_window_s}s vanaf nu —
   # ook bij een ongewijzigde waarde. De strategie herhaalt de opdracht elk kwartier.

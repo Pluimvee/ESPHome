@@ -141,16 +141,16 @@ Wordt als vaste waarde **33** geschreven (geen read-modify-write):
 | `sensor.battery_soc_offset` | sensor | Diagnose: hires − BMS in pp |
 | `binary_sensor.battery_bms_soc_stalled` | binary | Diagnose: aan tijdens een BMS-stilstand (> 1,5pp energie sinds de laatste BMS-stap); tot 02-11 `bms_stalled` |
 | `sensor.remaining_capacity` | sensor | Huidige inhoud in Ah, afgeleid van `battery_soc_hires` (verving 14-11 `remaining_energy`) — zie [Energieboekhouding](#energieboekhouding--voorraad-in-ah-spanning-per-richting) |
-| `sensor.base_capacity` | sensor | Deel onder de overdischarge-ondergrens (Ah), niet bruikbaar (verving `base_energy`) |
+| `sensor.reserved_capacity` | sensor | Reserve onder de overdischarge-ondergrens (Ah), niet bruikbaar (verving `base_energy`; heette op 14-11 kort `base_capacity`) |
 | `sensor.discharge_voltage` / `sensor.charge_voltage` | sensor | Ah-gewogen lopend gemiddelde van de accuspanning per richting (V) |
-| `sensor.dischargeable_energy` | sensor | `(remaining − base) × discharge_voltage` in kWh: wat er nog uitkomt (verving `usable_energy`) |
+| `sensor.dischargeable_energy` | sensor | `(remaining − reserved) × discharge_voltage` in kWh: wat er nog uitkomt (verving `usable_energy`) |
 | `sensor.chargeable_energy` | sensor | `(capacity − remaining) × charge_voltage` in kWh: wat er nog in kan |
 | `sensor.grid_power` | sensor | Netmeter W (huis-conv: + = import), 5s, HA-visible |
 | `sensor.inverter_port_power` | sensor | AC grid port W (Solis-conv: + = export); tot 02-11 `inverter_power` |
 | `sensor.battery_power` | sensor | Accu DC W (33149, teken uit 33135; + = ontladen), 5s. Vervangt `solis_s6_eh3p_battery_power_net` in de EMS (PBI-080) |
 | `sensor.inverter_loss` | sensor | Omvormerverlies W (omzetting + stand-by) = accu-DC − AC-poort, beide + = richting net, over **30s-gemiddelden** van beide (zie hieronder); klopt ook bij tegengestelde stromen. Negatief: 0 + `ESP_LOGE` (user 02-11). 5s. Energie via een Riemann-helper in HA (PBI-080) |
 | `sensor.inverter_standby` | sensor | Geleerde stand-by van de omvormer W (PBI-093): EMA van `inverter_loss` over samples met \|accu\| < 30 W, τ 1 uur aan zulke samples, `restore_value`, start 81; altijd gepubliceerd (60s) |
-| `sensor.inverter_efficiency` | sensor | Omvormerrendement %, **alleen conversie** (PBI-093, 14-11): `1 − max(0, loss − standby) / \|accu-DC\|` over dezelfde 30s-gemiddelden; NAN onder 300 W accuvermogen en in rust; max 100. Tot 14-11 incl. stand-by (laden DC/AC, ontladen AC/DC) |
+| `sensor.inverter_efficiency` | sensor | Omvormerrendement %, **alleen conversie, als energieverhouding** (PBI-093, 14-11): `1 − Σ(loss − standby)·dt / Σ\|accu-DC\|·dt` over een venster van ~20 kWh doorvoer (exponentieel vergeten); NAN tot het venster 1 kWh bevat; max 100; 60s. Tot 14-11 momentaan incl. stand-by (laden DC/AC, ontladen AC/DC) |
 
 **Waarom 30s-gemiddelden** (02-11): per read schommelt DC − AC ±50W. 33149 springt in ~43W-stappen,
 en DC en AC lopen in de Solis niet exact gelijk op (de bus is het niet: beide komen uit hetzelfde
@@ -165,11 +165,30 @@ niets doet: de Solis meldt altijd `Generating` en komt nooit in zijn eigen Stand
 vermogensafhankelijke conversie (≈ 0 onder ~500 W, ~2-3% daarboven; meting 5-min-statistieken, 2,5 dag).
 Het oude rendement mengde die twee: bij 200 W (level rond zonsop- en -ondergang) ~60%, en in rust NAN —
 juist het deel dat het meeste kost was onzichtbaar. Nu leert `g_standby_w` in rust (|accu| < 30 W) het
-verlies als EMA (α = 5 s / 3600 s per sample) en publiceert `inverter_standby` dat altijd; het rendement
-trekt de stand-by van het verlies af en bestaat alleen vanaf 300 W (een offset van ±10 W tussen de
-DC- en AC-meting is bij 100 W al 10 pp). Totaalrendement incl. stand-by hoort niet in de firmware maar
-als dagratio in HA (dagverlies / dagdoorvoer). Strategie-vervolg (PBI-025): de vaste 0,95 in
-`import_hold_quarters` vervangen door het gemeten conversierendement (~0,975).
+verlies als EMA (α = 5 s / 3600 s per sample) en publiceert `inverter_standby` dat altijd.
+
+**Rendement als energieverhouding** (user 14-11): een momentaan vermogen is onder ~500 W ruis (een
+offset van ±10 W tussen de DC- en AC-meting is bij 100 W al 10 pp; 33149 springt in 43 W-stappen), een
+ondergrens van 300 W gaf daar alleen NAN. Over energie middelt die ruis uit en is de stand-by precies
+vermogen × tijd. Buiten rust telt `inverter_loss` per sample (5 s) de DC-doorvoer `|accu|·dt` en het
+conversieverlies `(loss − standby)·dt` op in `g_eff_e_wh` / `g_eff_l_wh`, met exponentieel vergeten naar
+rato van de doorvoer: `f = 1 − dE / 20 kWh` (ongeveer een halve dag; het venster mag best eens korter
+zijn). Het verlies wordt niet per sample afgekapt (dat zou ruis een positieve bias geven), het rendement
+wel op 100. `inverter_efficiency = 1 − g_eff_l / g_eff_e`, NAN tot er 1 kWh in het venster zit. Vermogens
+onder de stand-by wegen in de som nauwelijks mee, dus er is geen ondergrens meer nodig.
+
+**Flash-slijtage** (user 14-11): een `restore_value`-global gaat bij elke wijziging naar NVS, hooguit elke
+`flash_write_interval` (15 min). Dat blijft zo voor wat vers moet zijn (`g_off`: hires over een herstart;
+`g_anchor_ah`: de lopende traverse) en voor wat zelden verandert (`g_capacity_ah`, `g_anchor_kind`,
+`g_floor_pct`). De lerende gemiddelden (`g_dis_v`, `g_chg_v`, `g_standby_w`, `g_eff_e_wh`, `g_eff_l_wh`)
+veranderen elke 5 s maar mogen gerust een halve dag leren kwijtraken: ze leven in gewone globals en gaan
+via `save_learned` elke 12 h (`learn_save_interval`) én bij een nette herstart (`on_shutdown`, prioriteit
+600, vóór het wegschrijven van de globals op 800) naar een bewaarde tweeling `*_s`, waaruit `on_boot` ze
+terugzet. Twee NVS-writes per dag per waarde.
+
+Totaalrendement incl. stand-by hoort niet in de firmware maar als dagratio in HA (dagverlies /
+dagdoorvoer). Strategie-vervolg (PBI-025): de vaste 0,95 in `import_hold_quarters` vervangen door het
+gemeten conversierendement (~0,975).
 | `sensor.battery_charge_energy` / `battery_discharge_energy` | sensor | Solis-tellers 33161/33165 (kWh, 0,01, `total_increasing`), 60s. Vervangen `solis_s6_eh3p_total_battery_charge/discharge_energy` in de EMS (PBI-080); `solis_modbus` blijft als analyse- en testtool |
 | `sensor.residual_power` | sensor | Huislast + omvormerverlies minus PV (W), = grid − accu-DC; negatief bij PV-overschot, 5s — zie [Residual power en energie](#residual-power-en-energie) |
 | `sensor.residual_energy` | sensor | Tweezijdige teller (kWh, `state_class: total`) bij `residual_power`, 60s |
@@ -722,14 +741,16 @@ Ah-gewogen lopend gemiddelde per richting, bijgewerkt in `battery_power_raw on_v
 spanning (33133): `v_mean += min(1, dAh / voltage_window_ah) × (v − v_mean)`, venster 47 Ah (één volle
 traverse). Ah-gewogen, zodat de rustspanning bij 0 A niet meetelt en vol vermogen zwaar weegt — zo komt
 de kWh-omrekening overeen met wat de tellers zien. Startwaarden 419 / 436 V (meting 03-11..14-11). De
-telling zelf gebruikt het gemiddelde van de richting alleen als terugval bij een ongeldige 33133.
+telling zelf gebruikt het gemiddelde van de richting alleen als terugval bij een ongeldige 33133. Niet
+rechtstreeks `restore_value` maar via een tweeling die 2× per dag wordt bijgewerkt — zie Flash-slijtage
+onder de omvormersensoren.
 
 ### Register 33213 — Overdischarge SOC Mirror
 
 Losse FC04-read, elke 15 minuten (skip_updates 900 @ 1s update_interval) — bewust laagfrequent, deze
 instelling verandert in de praktijk vrijwel nooit. De **MIRROR** (33213), niet de instelling (43011): de
 mirror is wat de omvormer werkelijk toepast als ondergrens, de instelling zelf kan afwijken of vertragen.
-Bewaard in `g_floor_pct` (`restore_value`), omdat `base_capacity` anders na elke (her)start tot een
+Bewaard in `g_floor_pct` (`restore_value`), omdat `reserved_capacity` anders na elke (her)start tot een
 kwartier op 0 stond.
 
 ### Sensoren
@@ -738,10 +759,10 @@ kwartier op 0 stond.
 |---|---|---|---|
 | `battery_capacity` | Ah | `g_capacity_ah` — volle capaciteit, geleerd (tot 14-11 kWh, vast 20,48) | 60s |
 | `remaining_capacity` | Ah | `battery_soc_hires / 100 × g_capacity_ah` (verving `remaining_energy`) | 10s |
-| `base_capacity` | Ah | `g_capacity_ah × g_floor_pct / 100` (verving `base_energy`) | 60s, delta 0,0005 |
+| `reserved_capacity` | Ah | `g_capacity_ah × g_floor_pct / 100` (verving `base_energy`) | 60s, delta 0,0005 |
 | `discharge_voltage` | V | `g_dis_v` | 60s |
 | `charge_voltage` | V | `g_chg_v` | 60s |
-| `dischargeable_energy` | kWh | `(remaining − base) × g_dis_v / 1000` (verving `usable_energy`) | 10s |
+| `dischargeable_energy` | kWh | `(remaining − reserved) × g_dis_v / 1000` (verving `usable_energy`) | 10s |
 | `chargeable_energy` | kWh | `(capacity − remaining) × g_chg_v / 1000` | 10s |
 
 `remaining_capacity` en de `*_energy`-sensoren zijn afgeleid van `battery_soc_hires` (niet van de
