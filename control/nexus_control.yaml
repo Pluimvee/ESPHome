@@ -30,6 +30,16 @@ substitutions:
   capacity_learn_band: "0.15"
   # Spanningen: Ah-gewogen lopend gemiddelde per richting, venster één volle traverse (Ah).
   voltage_window_ah: "47"
+  # Omvormer-standby (PBI-093, 14-11-2026): ~81 W die de Solis ook trekt als de accu niets doet
+  # (hij komt nooit in zijn eigen Standby-status, ook niet in een hold-nacht: ~1,9 kWh/dag).
+  # Geleerd als EMA van Inverter Loss over samples met |accu| < inverter_idle_w, tijdconstante
+  # inverter_standby_tau_s aan zulke samples (5 s per sample). Het rendement is daarmee alleen
+  # conversie, en alleen vanaf inverter_eff_min_w: onder ~500 W is DC − AC ruis (een offset van
+  # ±10 W tussen beide metingen is al 10 pp bij 100 W).
+  inverter_standby_init: "81"
+  inverter_idle_w: "30"
+  inverter_standby_tau_s: "3600"
+  inverter_eff_min_w: "300"
   # Energie (pp) sinds de laatste BMS-stap waarboven we een BMS-stilstand aannemen. Een
   # normale stap is ~1pp; de BMS blijft op vaste plekken hangen (89-90 bij laden, 19-21
   # bij ontladen). Sinds v3 alleen nog diagnose (bms_stalled), geen invloed op hires.
@@ -221,6 +231,11 @@ globals:
     type: float
     restore_value: true
     initial_value: '${hires_floor_pct}.0'
+  # Geleerde omvormer-standby (W, PBI-093), bijgewerkt in inverter_loss.
+  - id: g_standby_w
+    type: float
+    restore_value: true
+    initial_value: '${inverter_standby_init}'
 
   # Grid metrics tumbling-window globals (15 min, reset after publish)
   - id: g_grid_sum
@@ -655,6 +670,8 @@ sensor:
   # over de 30s-gemiddelden. Klopt in elke richting, ook bij tegengestelde stromen (accu levert
   # 50W, poort neemt 30W af: 80W). Negatief kan niet (user 02-11): 0 en een ERROR-log; over een
   # 30s gemiddeld wijst dat op een echt probleem, niet op ruis.
+  # In rust (|accu| < inverter_idle_w) is het hele verlies stand-by: daar leert g_standby_w van
+  # (PBI-093), zodat inverter_efficiency alleen de conversie overhoudt.
   - platform: template
     id: inverter_loss
     name: "Inverter Loss"
@@ -673,12 +690,29 @@ sensor:
                  loss, b, p);
         return 0.0f;
       }
+      if (fabsf(b) < ${inverter_idle_w}.0f) {
+        id(g_standby_w) += (5.0f / ${inverter_standby_tau_s}.0f) * (loss - id(g_standby_w));
+      }
       return loss;
 
-  # Omvormerrendement (user 02-11): laden = DC in de accu / AC uit het net, ontladen = AC naar
-  # het net / DC uit de accu, over de 30s-gemiddelden (= energieverhouding over die 30s).
-  # Alleen als beide dezelfde kant op wijzen; in rust of bij tegengestelde stromen (stand-by)
-  # bestaat er geen rendement: NAN. Boven 100% is een negatief verlies (daar gelogd): max 100.
+  # Geleerde stand-by van de omvormer (PBI-093): wat de Solis trekt als de accu niets doet.
+  # Altijd gepubliceerd (laatst geleerde waarde), ook terwijl de accu werkt.
+  - platform: template
+    id: inverter_standby
+    name: "Inverter Standby"
+    icon: "mdi:power-sleep"
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 1
+    update_interval: 60s
+    lambda: return id(g_standby_w);
+
+  # Omvormerrendement, alleen conversie (PBI-093, 14-11; tot dan incl. stand-by, user 02-11):
+  # 1 − max(0, verlies − stand-by) / |accu-DC|, over de 30s-gemiddelden. Alleen vanaf
+  # inverter_eff_min_w: daaronder is het verschil DC − AC ruis en domineert de stand-by
+  # (200 W gaf ~60%, wat niets over de omvormer zegt). In rust NAN: er wordt niets omgezet,
+  # de stand-by staat in inverter_standby. Boven 100% is een negatief verlies (daar gelogd): max 100.
   - platform: template
     id: inverter_efficiency
     name: "Inverter Efficiency"
@@ -690,11 +724,9 @@ sensor:
     lambda: |-
       float b = id(battery_power_avg).state, p = id(grid_port_power_avg).state;
       if (std::isnan(b) || std::isnan(p)) return NAN;
-      float eff;
-      if (b < 0.0f && p < 0.0f)      eff = b / p;   // laden: |DC| / |AC|
-      else if (b > 0.0f && p > 0.0f) eff = p / b;   // ontladen: AC / DC
-      else return NAN;
-      return std::min(100.0f, eff * 100.0f);
+      if (fabsf(b) < ${inverter_eff_min_w}.0f) return NAN;
+      float conv = std::max(0.0f, (b - p) - id(g_standby_w));
+      return std::min(100.0f, (1.0f - conv / fabsf(b)) * 100.0f);
 
   # Hoger-resolutie SOC-schatting (v3, 28-10-2026, PBI-044). Ampère-telling op P/V
   # (33149/33133) die tussen de eindpunten los van de BMS loopt. De state wordt bijgewerkt
