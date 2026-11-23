@@ -250,6 +250,16 @@ Vervolgens, voor deze vier modes identiek:
 
 ## SOC-deadline sturing (charge / discharge)
 
+**Geen druppelladen (PBI-116, 23-11).** R spreidt de behoefte over het hele venster: 15-11 22:45Z laden
+van 57,2 naar 57,6 gaf R ≈ 330 W. De omvormer verliest ~90 W vast, dus dat kostte ~22% (gemeten over 9
+dagen AC in tegen accu: 77% bij 300-500 W, 91% bij 0,75-1 kW, 96% bij 1,5-2,5 kW, 98% daarboven). In
+charge geldt daarom `R ≥ 2 kW` zolang er behoefte is: het doel wordt eerder gehaald, daarna hold. Geen
+pendelen, want in charge staat ontladen dicht en zakt hires na het doel niet terug; overshoot hooguit één
+ronde (30 s × 2 kW ≈ 17 Wh ≈ 0,08 pp). Bij PV-overschot verandert niets (setpoint blijft ≥ `target_grid`),
+de fasegrens begrenst zoals altijd. Doel 100: hires staat op 99,9 tot de BMS 100 meldt, dus het laatste
+stuk gaat nu op 2 kW in plaats van druppelend; de BMS neemt bovenin zelf minder op en de Solis importeert
+dan minder. Discharge niet: daar bepaalt het vermogen ook de export, apart te beslissen.
+
 **Opdracht**: `target_soc` halen vóór het einde van het opdrachtvenster (15 min, zie [Opdrachtvenster](#opdrachtvenster-15-min-en-safe-mode-pbi-046)), met de waarden van nu. De firmware
 voorspelt geen PV en bouwt geen buffer in: verwachte PV en reserve(kwartieren) zijn aan het EMS, dat
 `target_soc` zo vaak kan bijstellen als het wil (sinds 18-10-2026, zie [Geschiedenis](#geschiedenis-pv-marge-en-anker-tot-18-10-2026)).
@@ -260,12 +270,14 @@ MAX_GRID_W    = 10000     # |setpoint|: meer neemt de Solis via 43133 niet aan
 I_LIM_A       = 25        # hoofdzekering per fase
 W_PER_A       = 690       # 3 x 230V: 1W setpoint = 1/690 A extra op elke fase
 RATE_FLOOR_MS = 30000     # ondergrens op de deler: één apply_mode-ronde (was 2 min tot 19-10)
+MIN_CHARGE_W  = 2000      # ondergrens op R in charge (PBI-116, 23-11)
 
 not_past_target = soc <= target_soc      # charge   (discharge: soc >= target_soc)
 if soc geldig and not_past_target:
     need_pct  = target_soc − soc         # charge   (discharge: soc − target_soc); 0 op het doel
     remaining = max(cmd_deadline − now, RATE_FLOOR_MS)           # int32-verschil, overloop-bestendig
     R         = need_pct/100 · BATTERY_WH / remaining          # benodigd accuvermogen
+    charge en need_pct > 0: R = max(R, MIN_CHARGE_W)           # geen druppelladen
     want      = residual_power + R       # charge   (discharge: residual_power − R)
     cap       = +MAX_GRID_W              # charge   (discharge: −MAX_GRID_W)
     i_max     = max(Ia, Ib, Ic)

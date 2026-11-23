@@ -1611,6 +1611,13 @@ script:
           // door de 30s-vloer (need / resttijd) terwijl de accu bovenin weinig opneemt; 29-10
           // 01:59Z ging force zo 90s nodeloos aan. In force blijven mag wel (hysterese).
           const int32_t FORCE_ENTRY_CUTOFF_MS = 180000;
+          // Ondergrens op R in charge (PBI-116, user 16-11): de omvormer heeft ~90 W vast verlies,
+          // dus laden over het hele venster op een paar honderd watt kost 8-23% (gemeten 9 dagen:
+          // 77% bij 300-500 W, 91% bij ~1 kW, 96% bij 1,5-2,5 kW). Met 2 kW is het doel eerder
+          // gehaald en zet "voorbij het doel → hold" het af. Pendelen kan niet: in charge staat
+          // ontladen dicht, dus hires zakt na het doel niet terug. Discharge niet: daar bepaalt
+          // het vermogen ook de export.
+          const float MIN_CHARGE_W = 2000.0f;
 
           float tgt_w      = (mode == "hold") ? 0.0f : id(target_grid_number).state;
           float tgt_soc    = id(target_soc_number).state;
@@ -1653,6 +1660,7 @@ script:
               int32_t left_ms = (int32_t)(id(cmd_deadline_ms) - millis());
               float remaining = std::max(left_ms, (int32_t)RATE_FLOOR_MS) / 3600000.0f;
               rate_w = (need_pct / 100.0f) * BATTERY_WH / remaining;
+              if (mode == "charge" && need_pct > 0.0f) rate_w = std::max(rate_w, MIN_CHARGE_W);
 
               // Huislast-term: setpoint = residual ± R, zodat huislast (EV-lader, WP) het laden
               // niet wegdrukt. Binnen de 30s houdt de Solis het net op het setpoint: extra PV
