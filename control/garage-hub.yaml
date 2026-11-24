@@ -81,17 +81,17 @@ web_server:
 # Define the two relays
 switch:
   - platform: gpio
-    pin: GPIO4 #(NodeMCU pin D2)
+    pin: GPIO5 #(NodeMCU pin D1)
     id: charge_on
     name: "Charge On"
-    inverted: yes  # default the charger is on, wired on NO: active relais switches the charger on
-    restore_mode: RESTORE_DEFAULT_ON  # Restore the state after reboot
+    inverted: no  # default Low de-activates opto-couple whih leaves the on/off switch high and disables charging
+    restore_mode: RESTORE_DEFAULT_OFF  # Restore the state after reboot
 
   - platform: gpio
-    pin: GPIO5 # (NodeMCU pin D1)
+    pin: GPIO4 # (NodeMCU pin D2)
     id: fast_charging
     name: "Fast Charging"
-    inverted: yes
+    inverted: true # default High activates opto-coupler to pull C-sel2 to GND -> Max 10 Amp : slow charging, Low activates opto-couple to pull C-sel1 to GND -> Max 32 Amp : fast charging
     restore_mode: RESTORE_DEFAULT_OFF  # default slow charging (10Amps), restore the state after reboot
 
 # UART configuration for MAX485, same as modbus-bridge
