@@ -124,6 +124,7 @@ font:
     glyphs:
       - "\U000F0238"  # mdi:fire  (heating)
       - "\U000F0717"  # mdi:snowflake (cooling)
+      - "\U000F12CB"  # mdi:snowflake-melt (defrost)
       - "\U000F15A3"  # mdi:robot-off-outline (system disabled)
 
 # ── Global voor HA-verbindingsstatus ─────────────────────────────────────────
@@ -249,9 +250,12 @@ display:
       if (!id(enable_control).state) {
         it.print(65, 91, id(font_icon_m), Color(200, 60, 60), "\U000F15A3");
       } else {
-        it.print(25, 91, id(font_icon_m),
-                 id(ot_flame).state ? Color(255, 150, 0) : Color(60, 60, 60),
-                 "\U000F0238");
+        if (id(defrost).state)
+          it.print(25, 91, id(font_icon_m), Color(200, 230, 255), "\U000F12CB");
+        else
+          it.print(25, 91, id(font_icon_m),
+                   id(ot_flame).state ? Color(255, 150, 0) : Color(60, 60, 60),
+                   "\U000F0238");
         it.print(95, 91, id(font_icon_m),
                  id(ot_cooling_active).state ? Color(80, 160, 210) : Color(60, 60, 60),
                  "\U000F0717");
@@ -310,6 +314,8 @@ sensor:
       name: inlet
     outlet:
       name: outlet
+    floor:
+      name: floor
     factor:
       name: factor
 
@@ -340,6 +346,21 @@ binary_sensor:
       device_class: cold
       icon: mdi:snowflake
 
+  # Defrost: WP onttrekt warmte aan het water → retour > aanvoer terwijl flame + CH aan.
+  # In rust leest retour ~0.2 K hoger dan aanvoer (offset), defrost geeft 1.5–3.5 K.
+  - platform: template
+    name: Defrost
+    id: defrost
+    icon: mdi:snowflake-melt
+    lambda: |-
+      if (!id(ot_flame).state || !id(ot_ch_active).state) return false;
+      float dt = id(ot_return).state - id(ot_boiler).state;
+      if (dt > 1.0f) return true;
+      if (dt < 0.5f) return false;
+      return {};  // hysterese: vorige state houden
+    filters:
+      - delayed_on: 60s
+
 
 button:
   - platform: restart
@@ -365,7 +386,7 @@ switch:
     ch_enable:
       name: Enable CH
       id: ot_ch_enable
-      restore_mode: DISABLED
+      restore_mode: RESTORE_DEFAULT_OFF
     dhw_enable:
       name: Enable DHW
       id: ot_dhw_enable
@@ -374,7 +395,7 @@ switch:
     cooling_enable:
       name: Enable Cooling
       id: ot_cooling_enable
-      restore_mode: DISABLED
+      restore_mode: RESTORE_DEFAULT_OFF
     otc_active:
       name: Enable OTC
       id: ot_otc_enable
@@ -454,6 +475,7 @@ climate_control:
   outside_sensor: ot_outside          # input sensor for outside temperature
   inlet_sensor: ot_return             # input sensor for inlet temperature 
   outlet_sensor: ot_boiler            # input sensor for outlet temperature
+  flame_sensor: ot_flame              # input binary sensor for flame (compressor running)
   target_number: target_temp_number   # input number for target temperature
   factor_a_number: factor_a_number    # input number for outside factor
   factor_b_number: factor_b_number    # input number for inside factor
